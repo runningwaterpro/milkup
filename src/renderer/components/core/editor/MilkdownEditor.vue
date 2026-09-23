@@ -9,6 +9,7 @@ import { automd } from '@milkdown/plugin-automd'
 import { commonmark } from '@milkdown/preset-commonmark'
 import { TextSelection } from '@milkdown/prose/state'
 import { enhanceConfig } from '@renderer/enhance/crepe/config'
+import { buildClipboardPayload, selectionStyleHost } from '@renderer/utils/clipboardPayload'
 import { nextTick, onBeforeUnmount, onMounted } from 'vue'
 import useTab from '@/hooks/useTab'
 import { uploader } from '@/plugins/customPastePlugin'
@@ -24,6 +25,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
 }>()
 let crepe: Crepe | null = null
+let detachClipboard: (() => void) | null = null
 
 const { currentTab } = useTab()
 function fixUnclosedCodeBlock(markdown: string): string {
@@ -115,13 +117,44 @@ onMounted(async () => {
   await crepe.create()
 
   editor.ctx.update(uploadConfig.key, prev => ({ ...prev, uploader }))
+  detachClipboard = bindDualClipboard(editor.ctx)
 })
 onBeforeUnmount(() => {
+  detachClipboard?.()
+  detachClipboard = null
   if (crepe) {
     crepe.destroy()
     crepe = null
   }
 })
+
+/** 双写：copy/cut 时同时写入 Markdown plain 与渲染 html（票 01–03）。 */
+function bindDualClipboard(ctx: Ctx): () => void {
+  const view = ctx.get(editorViewCtx)
+  const onCopyCut = (e: ClipboardEvent) => {
+    if (!e.clipboardData)
+      return
+    const sel = view.state.selection
+    if (sel.empty)
+      return
+    const serializer = ctx.get(serializerCtx)
+    const markdown = serializer(view.state.doc.slice(sel.from, sel.to))
+    const host = selectionStyleHost(view.dom)
+    const payload = buildClipboardPayload(markdown, host)
+    e.clipboardData.setData('text/plain', payload.plain)
+    if (payload.html)
+      e.clipboardData.setData('text/html', payload.html)
+    e.preventDefault()
+    if (e.type === 'cut')
+      view.dispatch(view.state.tr.delete(sel.from, sel.to))
+  }
+  view.dom.addEventListener('copy', onCopyCut, true)
+  view.dom.addEventListener('cut', onCopyCut, true)
+  return () => {
+    view.dom.removeEventListener('copy', onCopyCut, true)
+    view.dom.removeEventListener('cut', onCopyCut, true)
+  }
+}
 
 function emitOutlineUpdate(ctx: Ctx) {
   const headings = outline()(ctx)

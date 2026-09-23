@@ -30,6 +30,7 @@
     "dist:win-x64": "pnpm run build && electron-builder --win --x64",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "test": "vitest run",
     "prepare": "simple-git-hooks",
     "preinstall": "npx only-allow pnpm",
     "release": "genereleaselog",
@@ -103,13 +104,15 @@
     "eslint": "^9.33.0",
     "eslint-plugin-oxlint": "^1.12.0",
     "genereleaselog": "^0.0.5",
+    "happy-dom": "^20.14.5",
     "less": "^4.4.1",
     "oxlint": "^1.12.0",
     "picocolors": "^1.1.1",
     "simple-git-hooks": "^2.13.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
-    "vite-plugin-electron": "^0.29.0"
+    "vite-plugin-electron": "^0.29.0",
+    "vitest": "^3.2.7"
   },
   "pnpm": {
     "overrides": {

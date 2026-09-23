@@ -1,4 +1,5 @@
 import type { Block, ExportPDFOptions } from '@/main/types'
+import { cloneWithInlineStyles } from './inlineStyles'
 
 /**
  * 导出选定元素为一个带样式和图片的独立 HTML 文件
@@ -61,44 +62,6 @@ export async function exportElementWithStylesAndImages(
   a.click()
 
   setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-/**
- * 克隆元素及其所有子元素，并将样式内联化
- * @param element - 原始元素
- * @returns 克隆后的元素（样式已内联）
- */
-function cloneWithInlineStyles(element: HTMLElement): HTMLElement {
-  const clone = element.cloneNode(true) as HTMLElement
-  applyStylesRecursive(element, clone)
-  return clone
-}
-
-/**
- * 递归地应用 computed style
- * @param src - 原始节点
- * @param dest - 克隆节点
- */
-function applyStylesRecursive(src: Element, dest: Element): void {
-  const computed = getComputedStyle(src)
-  const style = Array.from(computed)
-    .map(key => `${key}:${computed.getPropertyValue(key)};`)
-    .join('')
-  dest.setAttribute('style', style)
-
-  // 🚨 修复 <a> 链接的点击性
-  if (dest instanceof HTMLAnchorElement) {
-    dest.style.pointerEvents = 'auto'
-    dest.style.cursor = 'pointer'
-    dest.style.textDecoration = 'underline'
-    dest.setAttribute('target', '_blank') // 可选：让导出文件中点击在新标签打开
-  }
-
-  const srcChildren = Array.from(src.children)
-  const destChildren = Array.from(dest.children)
-  for (let i = 0; i < srcChildren.length; i++) {
-    applyStylesRecursive(srcChildren[i], destChildren[i])
-  }
 }
 
 /**
