@@ -26,7 +26,6 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
 }>()
 let crepe: Crepe | null = null
-let detachClipboard: (() => void) | null = null
 
 const { currentTab } = useTab()
 function fixUnclosedCodeBlock(markdown: string): string {
@@ -104,7 +103,7 @@ onMounted(async () => {
   })
   const editor = crepe.editor
   editor.ctx.inject(uploadConfig.key)
-  // create 期间更新 options（与 clipboard 插件同路）；create 后再 update 不会进已建好的 View
+  // create 期间：粘贴规范化 + 用 handleDOMEvents 接管 copy/cut（PM 规范：返回 true 跳过默认序列化）
   editor.use($prose((ctx) => {
     ctx.update(editorViewOptionsCtx, prev => ({
       ...prev,
@@ -114,7 +113,14 @@ onMounted(async () => {
         return normalizeOlStartHtml(out)
       },
     }))
-    return new Plugin({})
+    return new Plugin({
+      props: {
+        handleDOMEvents: {
+          copy: (view, event) => writeDualClipboard(ctx, view, event as ClipboardEvent),
+          cut: (view, event) => writeDualClipboard(ctx, view, event as ClipboardEvent),
+        },
+      },
+    })
   }))
   editor
     .use(automd)
@@ -130,62 +136,44 @@ onMounted(async () => {
   await crepe.create()
 
   editor.ctx.update(uploadConfig.key, prev => ({ ...prev, uploader }))
-  detachClipboard = bindDualClipboard(editor.ctx)
 })
 onBeforeUnmount(() => {
-  detachClipboard?.()
-  detachClipboard = null
   if (crepe) {
     crepe.destroy()
     crepe = null
   }
 })
 
-/** 双写：在 document 捕获阶段抢在 ProseMirror 前写入 plain+html。 */
-function bindDualClipboard(ctx: Ctx): () => void {
-  const view = ctx.get(editorViewCtx)
-  const onCopyCut = (e: ClipboardEvent) => {
-    if (!e.clipboardData)
-      return
-    const target = e.target as Node | null
-    const inView = !!target && view.dom.contains(target)
-    const active = document.activeElement
-    // Electron 菜单复制时 target 可能是 document；PM 有选区就接管
-    const inApp = inView
-      || view.hasFocus()
-      || (!!active && view.dom.contains(active))
-      || target === document
-      || target === document.body
-    if (!inApp)
-      return
-    const sel = view.state.selection
-    if (sel.empty)
-      return
+/** 写入 plain+html；返回 true 表示已处理，阻止 PM 默认 clearData 覆盖。 */
+function writeDualClipboard(ctx: Ctx, view: ReturnType<typeof getAnyView>, e: ClipboardEvent): boolean {
+  if (!e.clipboardData)
+    return false
+  const sel = view.state.selection
+  if (sel.empty)
+    return false
+  try {
     const serializer = ctx.get(serializerCtx)
     const markdown = serializer(view.state.doc.slice(sel.from, sel.to))
-    // 宿主失败也绝不放弃：否则 PM 会 clearData 盖回无样式 HTML
     const host = selectionStyleHost(view)
-    if (!host) {
+    if (host) {
+      const payload = buildClipboardPayload(markdown, host)
+      e.clipboardData.setData('text/plain', payload.plain)
+      e.clipboardData.setData('text/html', payload.html)
+    } else {
       e.clipboardData.setData('text/plain', markdown)
-      e.stopImmediatePropagation()
-      e.preventDefault()
-      return
     }
-    const payload = buildClipboardPayload(markdown, host)
-    e.clipboardData.setData('text/plain', payload.plain)
-    e.clipboardData.setData('text/html', payload.html)
-    e.stopImmediatePropagation()
     e.preventDefault()
     if (e.type === 'cut')
       view.dispatch(view.state.tr.delete(sel.from, sel.to))
+    return true
+  } catch {
+    return false
   }
-  // 捕获挂在 document：先于 view.dom 上的 PM copy 处理器
-  document.addEventListener('copy', onCopyCut, true)
-  document.addEventListener('cut', onCopyCut, true)
-  return () => {
-    document.removeEventListener('copy', onCopyCut, true)
-    document.removeEventListener('cut', onCopyCut, true)
-  }
+}
+
+// 类型辅助：EditorView
+function getAnyView(ctx: Ctx) {
+  return ctx.get(editorViewCtx)
 }
 
 function emitOutlineUpdate(ctx: Ctx) {
