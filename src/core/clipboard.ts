@@ -315,32 +315,43 @@ function shouldPreserveClipboardLayout(source: Element): boolean {
   return CLIPBOARD_LAYOUT_TAGS.has(tag) || !!source.closest(CLIPBOARD_LAYOUT_CONTAINERS);
 }
 
-function copyComputedStyles(source: Element, target: Element, imageMode?: ImagePasteMethod): void {
-  if (isClipboardElementHidden(source)) target.setAttribute("data-clipboard-hidden", "true");
-  copyClipboardImageSource(source, target, imageMode);
-  const preserveLayout = shouldPreserveClipboardLayout(source);
-  if (!preserveLayout) {
-    for (const property of CLIPBOARD_LAYOUT_PROPERTIES) {
-      (target as HTMLElement).style.removeProperty(property);
-    }
-  }
-  if (typeof getComputedStyle === "function") {
-    const computed = getComputedStyle(source);
-    for (const property of Array.from(computed)) {
-      if (!preserveLayout && CLIPBOARD_LAYOUT_PROPERTIES.has(property)) {
-        (target as HTMLElement).style.removeProperty(property);
-        continue;
-      }
-      const value = computed.getPropertyValue(property);
-      if (value) (target as HTMLElement).style.setProperty(property, value);
-    }
-  }
-
+function copyElementTree(
+  source: Element,
+  target: Element,
+  visit: (source: Element, target: Element) => void
+): void {
+  visit(source, target);
   const sourceChildren = Array.from(source.children);
   const targetChildren = Array.from(target.children);
-  for (let i = 0; i < sourceChildren.length; i++) {
-    copyComputedStyles(sourceChildren[i], targetChildren[i], imageMode);
+  for (let index = 0; index < sourceChildren.length; index += 1) {
+    copyElementTree(sourceChildren[index], targetChildren[index], visit);
   }
+}
+
+function copyComputedStyles(source: Element, target: Element, imageMode?: ImagePasteMethod): void {
+  copyElementTree(source, target, (sourceElement, targetElement) => {
+    if (isClipboardElementHidden(sourceElement)) {
+      targetElement.setAttribute("data-clipboard-hidden", "true");
+    }
+    copyClipboardImageSource(sourceElement, targetElement, imageMode);
+    const preserveLayout = shouldPreserveClipboardLayout(sourceElement);
+    if (!preserveLayout) {
+      for (const property of CLIPBOARD_LAYOUT_PROPERTIES) {
+        (targetElement as HTMLElement).style.removeProperty(property);
+      }
+    }
+    if (typeof getComputedStyle === "function") {
+      const computed = getComputedStyle(sourceElement);
+      for (const property of Array.from(computed)) {
+        if (!preserveLayout && CLIPBOARD_LAYOUT_PROPERTIES.has(property)) {
+          (targetElement as HTMLElement).style.removeProperty(property);
+          continue;
+        }
+        const value = computed.getPropertyValue(property);
+        if (value) (targetElement as HTMLElement).style.setProperty(property, value);
+      }
+    }
+  });
 }
 
 function getNodePath(root: Node, target: Node): number[] | null {
@@ -893,22 +904,18 @@ export function refreshClipboardFallbacks(
 function inlineRuntimeStylesForRaster(source: Element, target: Element): void {
   if (typeof getComputedStyle !== "function") return;
 
-  try {
-    const computed = getComputedStyle(source);
-    for (let index = 0; index < computed.length; index += 1) {
-      const property = computed.item(index);
-      const value = computed.getPropertyValue(property);
-      if (value) (target as HTMLElement).style.setProperty(property, value);
+  copyElementTree(source, target, (sourceElement, targetElement) => {
+    try {
+      const computed = getComputedStyle(sourceElement);
+      for (let index = 0; index < computed.length; index += 1) {
+        const property = computed.item(index);
+        const value = computed.getPropertyValue(property);
+        if (value) (targetElement as HTMLElement).style.setProperty(property, value);
+      }
+    } catch {
+      // A best-effort inline style is still useful when computed styles are partial.
     }
-  } catch {
-    // A best-effort inline style is still useful when computed styles are partial.
-  }
-
-  const sourceChildren = Array.from(source.children);
-  const targetChildren = Array.from(target.children);
-  for (let index = 0; index < sourceChildren.length; index += 1) {
-    inlineRuntimeStylesForRaster(sourceChildren[index], targetChildren[index]);
-  }
+  });
 }
 
 function absolutizeFontFaceCssUrls(css: string, baseUri: string): string {
