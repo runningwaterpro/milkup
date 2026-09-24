@@ -7,7 +7,8 @@ import { upload, uploadConfig } from '@milkdown/kit/plugin/upload'
 import { outline } from '@milkdown/kit/utils'
 import { automd } from '@milkdown/plugin-automd'
 import { commonmark } from '@milkdown/preset-commonmark'
-import { TextSelection } from '@milkdown/prose/state'
+import { Plugin, TextSelection } from '@milkdown/prose/state'
+import { $prose } from '@milkdown/utils'
 import { enhanceConfig } from '@renderer/enhance/crepe/config'
 import { buildClipboardPayload, normalizeOlStartHtml, selectionStyleHost } from '@renderer/utils/clipboardPayload'
 import { nextTick, onBeforeUnmount, onMounted } from 'vue'
@@ -103,6 +104,18 @@ onMounted(async () => {
   })
   const editor = crepe.editor
   editor.ctx.inject(uploadConfig.key)
+  // create 期间更新 options（与 clipboard 插件同路）；create 后再 update 不会进已建好的 View
+  editor.use($prose((ctx) => {
+    ctx.update(editorViewOptionsCtx, prev => ({
+      ...prev,
+      transformPastedHTML: (html: string, view: never) => {
+        const prevFn = prev.transformPastedHTML
+        const out = prevFn ? prevFn.call(view, html, view as never) : html
+        return normalizeOlStartHtml(out)
+      },
+    }))
+    return new Plugin({})
+  }))
   editor
     .use(automd)
     .use(upload)
@@ -115,16 +128,6 @@ onMounted(async () => {
   }
 
   await crepe.create()
-
-  // 必须在 create 之后：editorViewOptions 要等内部插件注入
-  editor.ctx.update(editorViewOptionsCtx, prev => ({
-    ...prev,
-    transformPastedHTML: (html: string, view: never) => {
-      const prevFn = prev.transformPastedHTML
-      const out = prevFn ? prevFn.call(view, html, view as never) : html
-      return normalizeOlStartHtml(out)
-    },
-  }))
 
   editor.ctx.update(uploadConfig.key, prev => ({ ...prev, uploader }))
   detachClipboard = bindDualClipboard(editor.ctx)
@@ -160,9 +163,14 @@ function bindDualClipboard(ctx: Ctx): () => void {
       return
     const serializer = ctx.get(serializerCtx)
     const markdown = serializer(view.state.doc.slice(sel.from, sel.to))
+    // 宿主失败也绝不放弃：否则 PM 会 clearData 盖回无样式 HTML
     const host = selectionStyleHost(view)
-    if (!host)
+    if (!host) {
+      e.clipboardData.setData('text/plain', markdown)
+      e.stopImmediatePropagation()
+      e.preventDefault()
       return
+    }
     const payload = buildClipboardPayload(markdown, host)
     e.clipboardData.setData('text/plain', payload.plain)
     e.clipboardData.setData('text/html', payload.html)
