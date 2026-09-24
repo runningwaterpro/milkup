@@ -234,6 +234,11 @@ test("rendered mixed selections keep code layout without leaking it into prose",
   assert.equal(result?.querySelector("p")?.style.whiteSpace, "");
   assert.equal(result?.querySelector("p")?.style.wordBreak, "");
   assert.equal(result?.querySelector("pre")?.style.whiteSpace, "pre");
+
+  const payload = buildClipboardPayload("before\\nconst value = 1", result);
+  const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+  assert.equal(parsed.querySelector("p")?.style.whiteSpace, "normal");
+  assert.equal(parsed.querySelector("pre")?.style.whiteSpace, "pre");
   editorDom.remove();
 });
 
