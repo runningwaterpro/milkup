@@ -51,6 +51,7 @@ import { searchPluginKey } from "../plugins/search";
 import {
   buildCodeClipboardPayload,
   cacheClipboardPng,
+  canDeleteAfterClipboardWrite,
   createCodeClipboardExtension,
   getCodeClipboardOptions,
   writeClipboardPayload,
@@ -1210,8 +1211,11 @@ export class CodeBlockView implements NodeView {
     return buildCodeClipboardPayload(text, getCodeClipboardOptions(this.cm));
   }
 
-  private copyCodeBlock(): Promise<boolean> {
-    return writeClipboardPayload(this.createCodeClipboardPayload(this.cm.state.doc.toString()));
+  private async copyCodeBlock(): Promise<boolean> {
+    const result = await writeClipboardPayload(
+      this.createCodeClipboardPayload(this.cm.state.doc.toString())
+    );
+    return result.status !== "failed";
   }
 
   /**
@@ -1264,10 +1268,11 @@ export class CodeBlockView implements NodeView {
         const state = this.cm.state;
         const { from, to } = state.selection.main;
         const selectedText = state.sliceDoc(from, to);
-        const written = await writeClipboardPayload(this.createCodeClipboardPayload(selectedText));
+        const payload = this.createCodeClipboardPayload(selectedText);
+        const result = await writeClipboardPayload(payload);
         const current = this.cm.state.selection.main;
         if (
-          written &&
+          canDeleteAfterClipboardWrite(payload, result) &&
           this.cm.state.doc === state.doc &&
           current.from === from &&
           current.to === to

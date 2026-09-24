@@ -4,11 +4,13 @@ import { Window } from "happy-dom";
 import {
   buildClipboardPayload,
   buildCodeClipboardPayload,
+  canDeleteAfterClipboardWrite,
   getClipboardFontFamilies,
   getRenderedNodeRoot,
   getRenderedSelectionRoot,
   semanticizeClipboardDom,
   writeClipboardEvent,
+  writeClipboardPayload,
 } from "../src/core/clipboard.ts";
 
 const window = new Window();
@@ -295,7 +297,7 @@ test("buildCodeClipboardPayload carries the current code style", () => {
   assert.equal(parsed.querySelector("code")?.style.whiteSpace, "pre");
 });
 
-test("writeClipboardEvent writes both formats and prevents the default action", () => {
+test("writeClipboardEvent writes both formats and reports a rich result", () => {
   const values = new Map();
   const event = {
     clipboardData: {
@@ -312,10 +314,195 @@ test("writeClipboardEvent writes both formats and prevents the default action", 
     },
   };
 
-  const handled = writeClipboardEvent(event, { plain: "# Title", html: "<h1>Title</h1>" });
+  const result = writeClipboardEvent(event, { plain: "# Title", html: "<h1>Title</h1>" });
 
-  assert.equal(handled, true);
+  assert.deepEqual(result, { status: "rich" });
   assert.equal(event.defaultPrevented, true);
   assert.equal(values.get("text/plain"), "# Title");
   assert.equal(values.get("text/html"), "<h1>Title</h1>");
 });
+
+test("writeClipboardEvent falls back to plain text when HTML cannot be written", () => {
+  const values = new Map();
+  const event = {
+    clipboardData: {
+      clearData() {
+        values.clear();
+      },
+      setData(type, value) {
+        if (type === "text/html") throw new Error("HTML is unavailable");
+        values.set(type, value);
+      },
+    },
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+
+  const result = writeClipboardEvent(event, { plain: "# Title", html: "<h1>Title</h1>" });
+
+  assert.deepEqual(result, { status: "plain" });
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(values.get("text/plain"), "# Title");
+  assert.equal(values.has("text/html"), false);
+});
+
+test("writeClipboardPayload writes both formats through the browser Clipboard API", async () => {
+  let writtenItem;
+  const restore = installClipboardEnvironment({
+    write: async (items) => {
+      writtenItem = items[0];
+    },
+    writeText: async () => {
+      throw new Error("plain fallback should not be used");
+    },
+    electronAPI: {},
+  });
+
+  try {
+    const result = await writeClipboardPayload({ plain: "# Title", html: "<h1>Title</h1>" });
+
+    assert.deepEqual(result, { status: "rich" });
+    assert.deepEqual(Object.keys(writtenItem.data).sort(), ["text/html", "text/plain"]);
+  } finally {
+    restore();
+  }
+});
+
+test("writeClipboardPayload uses the Electron bridge for dual-format fallback", async () => {
+  let electronPayload;
+  let plainWriteCount = 0;
+  const restore = installClipboardEnvironment({
+    write: async () => {
+      throw new Error("browser rich clipboard is unavailable");
+    },
+    writeText: async () => {
+      plainWriteCount += 1;
+    },
+    electronAPI: {
+      writeToClipboard: async (payload) => {
+        electronPayload = payload;
+        return true;
+      },
+    },
+  });
+
+  try {
+    const result = await writeClipboardPayload({ plain: "# Title", html: "<h1>Title</h1>" });
+
+    assert.deepEqual(result, { status: "rich" });
+    assert.deepEqual(electronPayload, { text: "# Title", html: "<h1>Title</h1>" });
+    assert.equal(plainWriteCount, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("writeClipboardPayload distinguishes plain fallback from failure", async () => {
+  const restore = installClipboardEnvironment({
+    write: async () => {
+      throw new Error("rich clipboard is unavailable");
+    },
+    writeText: async () => undefined,
+    electronAPI: {
+      writeToClipboard: async () => false,
+    },
+  });
+
+  try {
+    assert.deepEqual(await writeClipboardPayload({ plain: "plain", html: "<p>rich</p>" }), {
+      status: "plain",
+    });
+  } finally {
+    restore();
+  }
+
+  const restoreFailure = installClipboardEnvironment({
+    write: async () => {
+      throw new Error("rich clipboard is unavailable");
+    },
+    writeText: async () => {
+      throw new Error("plain clipboard is unavailable");
+    },
+    electronAPI: {
+      writeToClipboard: async () => false,
+      writeTextToClipboard: async () => false,
+    },
+  });
+
+  try {
+    assert.deepEqual(await writeClipboardPayload({ plain: "plain", html: "<p>rich</p>" }), {
+      status: "failed",
+    });
+  } finally {
+    restoreFailure();
+  }
+});
+
+test("canDeleteAfterClipboardWrite only accepts rich writes for rich payloads", () => {
+  assert.equal(
+    canDeleteAfterClipboardWrite({ plain: "text", html: "<p>text</p>" }, { status: "rich" }),
+    true
+  );
+  assert.equal(
+    canDeleteAfterClipboardWrite({ plain: "text", html: "<p>text</p>" }, { status: "plain" }),
+    false
+  );
+  assert.equal(
+    canDeleteAfterClipboardWrite(
+      { plain: "source", html: "", richRequired: false },
+      { status: "plain" }
+    ),
+    true
+  );
+  assert.equal(
+    canDeleteAfterClipboardWrite(
+      { plain: "text", html: "", richRequired: true },
+      { status: "plain" }
+    ),
+    false
+  );
+  assert.equal(
+    canDeleteAfterClipboardWrite({ plain: "text", html: "<p>text</p>" }, { status: "failed" }),
+    false
+  );
+});
+
+function installClipboardEnvironment({ write, writeText, electronAPI }) {
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const previousClipboardItem = Object.getOwnPropertyDescriptor(globalThis, "ClipboardItem");
+  const previousElectronAPI = window.electronAPI;
+  const clipboard = {};
+  if (write) clipboard.write = write;
+  if (writeText) clipboard.writeText = writeText;
+
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { clipboard },
+  });
+  Object.defineProperty(globalThis, "ClipboardItem", {
+    configurable: true,
+    value: class MockClipboardItem {
+      constructor(data) {
+        this.data = data;
+      }
+    },
+  });
+  window.electronAPI = electronAPI;
+
+  return () => {
+    if (previousNavigator) {
+      Object.defineProperty(globalThis, "navigator", previousNavigator);
+    } else {
+      delete globalThis.navigator;
+    }
+    if (previousClipboardItem) {
+      Object.defineProperty(globalThis, "ClipboardItem", previousClipboardItem);
+    } else {
+      delete globalThis.ClipboardItem;
+    }
+    if (previousElectronAPI === undefined) delete window.electronAPI;
+    else window.electronAPI = previousElectronAPI;
+  };
+}

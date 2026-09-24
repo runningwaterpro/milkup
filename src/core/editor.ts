@@ -19,6 +19,7 @@ import "katex/dist/katex.min.css";
 import { milkupSchema } from "./schema";
 import {
   buildClipboardPayload,
+  canDeleteAfterClipboardWrite,
   getClipboardFontFamilies,
   getRenderedNodeRoot,
   getRenderedSelectionRoot,
@@ -847,13 +848,12 @@ export class MilkupEditor implements IMilkupEditor {
     cut: boolean
   ): boolean {
     const payload = this.createRichClipboardPayload(view, plain);
-    if (!writeClipboardEvent(event, payload)) {
-      if (cut) {
-        event.preventDefault();
-        return true;
-      }
-      return false;
+    const result = writeClipboardEvent(event, payload);
+    if (cut && !canDeleteAfterClipboardWrite(payload, result)) {
+      event.preventDefault();
+      return true;
     }
+    if (result.status === "failed") return false;
 
     if (cut) {
       view.dispatch(view.state.tr.deleteSelection().scrollIntoView().setMeta("uiEvent", "cut"));
@@ -871,8 +871,8 @@ export class MilkupEditor implements IMilkupEditor {
   }
 
   private createRichClipboardPayload(view: EditorView, plain: string): ClipboardPayload {
+    const sourceView = this.isSourceViewEnabled();
     try {
-      const sourceView = this.isSourceViewEnabled();
       const imageMode = sourceView ? undefined : this.getClipboardImageMode();
       const renderedRoot =
         sourceView || !shouldUseRenderedClipboardDom(view)
@@ -889,7 +889,7 @@ export class MilkupEditor implements IMilkupEditor {
       });
     } catch (error) {
       console.error("生成富文本剪贴板失败", error);
-      return { plain, html: "" };
+      return { plain, html: "", richRequired: !sourceView };
     }
   }
 
@@ -916,7 +916,7 @@ export class MilkupEditor implements IMilkupEditor {
       });
     } catch (error) {
       console.error("生成表格剪贴板失败", error);
-      return { plain, html: "" };
+      return { plain, html: "", richRequired: true };
     }
   }
 
@@ -1114,10 +1114,11 @@ export class MilkupEditor implements IMilkupEditor {
         const { from, to } = state.selection;
         const plain = this.serializeSelectionForClipboard();
         const payload = this.createRichClipboardPayload(this.view, plain);
-        const written = await writeClipboardPayload(payload);
+        const result = await writeClipboardPayload(payload);
+        const canDelete = canDeleteAfterClipboardWrite(payload, result);
         const selection = this.view.state.selection;
         if (
-          written &&
+          canDelete &&
           this.view.state.doc === state.doc &&
           selection.from === from &&
           selection.to === to

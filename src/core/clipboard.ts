@@ -17,6 +17,13 @@ export interface ClipboardBuildOptions {
 export interface ClipboardPayload {
   plain: string;
   html: string;
+  richRequired?: boolean;
+}
+
+export type ClipboardWriteStatus = "rich" | "plain" | "failed";
+
+export interface ClipboardWriteResult {
+  status: ClipboardWriteStatus;
 }
 
 export interface CodeClipboardOptions {
@@ -24,6 +31,14 @@ export interface CodeClipboardOptions {
   codeFontFamily?: string;
   codeStyle?: string;
   blockStyle?: string;
+}
+
+export function canDeleteAfterClipboardWrite(
+  payload: ClipboardPayload,
+  result: ClipboardWriteResult
+): boolean {
+  const richRequired = payload.richRequired ?? !!payload.html;
+  return result.status !== "failed" && (!richRequired || result.status === "rich");
 }
 
 function cleanFontFamily(value: string): string {
@@ -386,15 +401,16 @@ export function buildClipboardPayload(
   selectionRoot: HTMLElement | null,
   options: ClipboardBuildOptions = {}
 ): ClipboardPayload {
+  const richRequired = !options.sourceView;
   const root = selectionRoot ? semanticizeClipboardDom(selectionRoot, options) : null;
-  if (!root) return { plain, html: "" };
+  if (!root) return { plain, html: "", richRequired };
 
   stripUnsafeContent(root);
   applyTableBorders(root);
   applyClipboardFonts(root, options);
   applyClipboardImages(root, options.imageMode);
   applyClipboardPngFallback(root);
-  return { plain, html: root.outerHTML };
+  return { plain, html: root.outerHTML, richRequired };
 }
 
 export function buildCodeClipboardPayload(
@@ -420,50 +436,116 @@ export function buildCodeClipboardPayload(
   return buildClipboardPayload(text, root, options);
 }
 
-export function writeClipboardEvent(event: ClipboardEvent, payload: ClipboardPayload): boolean {
+export function writeClipboardEvent(
+  event: ClipboardEvent,
+  payload: ClipboardPayload
+): ClipboardWriteResult {
   const data = event.clipboardData;
-  if (!data) return false;
+  if (!data) return { status: "failed" };
 
+  let plainWritten = false;
   try {
     data.clearData();
     data.setData("text/plain", payload.plain);
+    plainWritten = true;
     if (payload.html) data.setData("text/html", payload.html);
     event.preventDefault();
-    return true;
+    return { status: payload.html ? "rich" : "plain" };
   } catch (error) {
     console.error("写入剪贴板失败", error);
+    if (!plainWritten) return { status: "failed" };
+
+    // Keep the successful plain-text write usable, but report that the
+    // requested rich representation was not available.
+    event.preventDefault();
+    return { status: "plain" };
+  }
+}
+
+type ElectronClipboardApi = {
+  writeToClipboard?: (payload: { text: string; html: string }) => Promise<boolean>;
+  writeTextToClipboard?: (text: string) => Promise<boolean>;
+};
+
+function getBrowserClipboard(): Clipboard | null {
+  if (typeof navigator === "undefined" || !navigator.clipboard) return null;
+  return navigator.clipboard;
+}
+
+function getElectronClipboardApi(): ElectronClipboardApi | null {
+  if (typeof window === "undefined") return null;
+  return window.electronAPI ?? null;
+}
+
+async function writeBrowserRichClipboard(payload: ClipboardPayload): Promise<boolean> {
+  const clipboard = getBrowserClipboard();
+  if (
+    !payload.html ||
+    !clipboard ||
+    typeof clipboard.write !== "function" ||
+    typeof ClipboardItem === "undefined"
+  ) {
+    return false;
+  }
+
+  try {
+    await clipboard.write([
+      new ClipboardItem({
+        "text/plain": new Blob([payload.plain], { type: "text/plain" }),
+        "text/html": new Blob([payload.html], { type: "text/html" }),
+      }),
+    ]);
+    return true;
+  } catch {
     return false;
   }
 }
 
-export async function writeClipboardPayload(payload: ClipboardPayload): Promise<boolean> {
-  if (payload.html && typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-    try {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          "text/plain": new Blob([payload.plain], { type: "text/plain" }),
-          "text/html": new Blob([payload.html], { type: "text/html" }),
-        }),
-      ]);
-      return true;
-    } catch {
-      // Fall through to the plain-text path.
-    }
-  }
+async function writeElectronRichClipboard(payload: ClipboardPayload): Promise<boolean> {
+  const api = getElectronClipboardApi();
+  if (!payload.html || !api?.writeToClipboard) return false;
 
   try {
-    await navigator.clipboard.writeText(payload.plain);
-    return true;
+    return (await api.writeToClipboard({ text: payload.plain, html: payload.html })) === true;
   } catch {
-    if (typeof window !== "undefined" && window.electronAPI?.writeTextToClipboard) {
-      try {
-        return await window.electronAPI.writeTextToClipboard(payload.plain);
-      } catch {
-        return false;
-      }
-    }
     return false;
   }
+}
+
+async function writeBrowserPlainClipboard(text: string): Promise<boolean> {
+  const clipboard = getBrowserClipboard();
+  if (!clipboard || typeof clipboard.writeText !== "function") return false;
+
+  try {
+    await clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function writeElectronPlainClipboard(text: string): Promise<boolean> {
+  const api = getElectronClipboardApi();
+  if (!api?.writeTextToClipboard) return false;
+
+  try {
+    return (await api.writeTextToClipboard(text)) === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function writeClipboardPayload(
+  payload: ClipboardPayload
+): Promise<ClipboardWriteResult> {
+  if (payload.html) {
+    if (await writeBrowserRichClipboard(payload)) return { status: "rich" };
+    if (await writeElectronRichClipboard(payload)) return { status: "rich" };
+  }
+
+  if (await writeBrowserPlainClipboard(payload.plain)) return { status: "plain" };
+  if (await writeElectronPlainClipboard(payload.plain)) return { status: "plain" };
+  return { status: "failed" };
 }
 
 export function createCodeClipboardExtension(isReadOnly: () => boolean = () => false): Extension {
@@ -502,13 +584,12 @@ function writeCodeClipboard(
     ranges.map((range) => view.state.sliceDoc(range.from, range.to)).join(view.state.lineBreak),
     getCodeClipboardOptions(view)
   );
-  if (!writeClipboardEvent(event, payload)) {
-    if (event.type === "cut") {
-      event.preventDefault();
-      return true;
-    }
-    return false;
+  const result = writeClipboardEvent(event, payload);
+  if (event.type === "cut" && !canDeleteAfterClipboardWrite(payload, result)) {
+    event.preventDefault();
+    return true;
   }
+  if (result.status === "failed") return false;
 
   if (event.type === "cut") {
     view.dispatch({
