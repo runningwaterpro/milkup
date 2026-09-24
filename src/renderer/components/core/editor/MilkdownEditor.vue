@@ -128,11 +128,15 @@ onBeforeUnmount(() => {
   }
 })
 
-/** 双写：copy/cut 时同时写入 Markdown plain 与渲染 html（票 01–03）。 */
+/** 双写：在 document 捕获阶段抢在 ProseMirror 前写入 plain+html。 */
 function bindDualClipboard(ctx: Ctx): () => void {
   const view = ctx.get(editorViewCtx)
   const onCopyCut = (e: ClipboardEvent) => {
     if (!e.clipboardData)
+      return
+    const target = e.target as Node | null
+    const inView = !!target && view.dom.contains(target)
+    if (!inView && !(document.activeElement && view.dom.contains(document.activeElement)))
       return
     const sel = view.state.selection
     if (sel.empty)
@@ -144,15 +148,18 @@ function bindDualClipboard(ctx: Ctx): () => void {
     e.clipboardData.setData('text/plain', payload.plain)
     if (payload.html)
       e.clipboardData.setData('text/html', payload.html)
+    // 阻止 ProseMirror 再 clearData() 覆盖成无样式 HTML
+    e.stopImmediatePropagation()
     e.preventDefault()
     if (e.type === 'cut')
       view.dispatch(view.state.tr.delete(sel.from, sel.to))
   }
-  view.dom.addEventListener('copy', onCopyCut, true)
-  view.dom.addEventListener('cut', onCopyCut, true)
+  // 捕获挂在 document：先于 view.dom 上的 PM copy 处理器
+  document.addEventListener('copy', onCopyCut, true)
+  document.addEventListener('cut', onCopyCut, true)
   return () => {
-    view.dom.removeEventListener('copy', onCopyCut, true)
-    view.dom.removeEventListener('cut', onCopyCut, true)
+    document.removeEventListener('copy', onCopyCut, true)
+    document.removeEventListener('cut', onCopyCut, true)
   }
 }
 
