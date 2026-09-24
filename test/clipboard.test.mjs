@@ -238,11 +238,57 @@ test("rendered mixed selections keep code layout without leaking it into prose",
   const payload = buildClipboardPayload("before\\nconst value = 1", result);
   const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
   assert.equal(parsed.querySelector("p")?.style.whiteSpace, "normal");
-  assert.equal(parsed.querySelector("pre")?.style.whiteSpace, "pre");
+  assert.equal(parsed.querySelector("pre")?.style.whiteSpace, "pre-wrap");
   editorDom.remove();
 });
 
-test("getRenderedSelectionRoot drops prose layout but keeps table dimensions", () => {
+test("mixed rendered selections do not carry source table geometry", () => {
+  const editorDom = makeRoot(
+    '<p>before</p><table width="640" style="width: 640px"><tbody><tr><td width="600" style="min-width: 600px">cell</td></tr></tbody></table>'
+  );
+  document.body.appendChild(editorDom);
+  const range = document.createRange();
+  range.selectNodeContents(editorDom);
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  const rendered = getRenderedSelectionRoot({ dom: editorDom });
+  const payload = buildClipboardPayload("before\\ncell", rendered);
+  const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+
+  assert.equal(parsed.querySelector("table")?.style.width, "");
+  assert.equal(parsed.querySelector("table")?.getAttribute("width"), null);
+  assert.equal(parsed.querySelector("td")?.style.minWidth, "");
+  assert.equal(parsed.querySelector("td")?.getAttribute("width"), null);
+  editorDom.remove();
+});
+
+test("code blocks drop source geometry and reflow long lines in final HTML", () => {
+  const editorDom = makeRoot(
+    '<pre style="width: 640px; white-space: pre"><code style="min-width: 600px">const longLine = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";</code></pre>'
+  );
+  document.body.appendChild(editorDom);
+  const range = document.createRange();
+  range.selectNodeContents(editorDom);
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  const rendered = getRenderedSelectionRoot({ dom: editorDom });
+  const payload = buildClipboardPayload("code", rendered);
+  const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+  const pre = parsed.querySelector("pre");
+  const code = parsed.querySelector("pre code");
+
+  assert.equal(pre?.style.width, "");
+  assert.equal(pre?.style.whiteSpace, "pre-wrap");
+  assert.equal(code?.style.minWidth, "");
+  assert.equal(code?.style.whiteSpace, "pre-wrap");
+  editorDom.remove();
+});
+
+test("getRenderedSelectionRoot drops prose and table viewport geometry", () => {
   const editorDom = makeRoot(
     '<p style="width: 320px; max-width: 320px; height: 100px; white-space: pre-wrap; font-size: 18px;">text</p>' +
       '<table style="width: 640px"><tbody><tr><td>cell</td></tr></tbody></table>'
@@ -263,7 +309,7 @@ test("getRenderedSelectionRoot drops prose layout but keeps table dimensions", (
   assert.equal(paragraph?.style.whiteSpace, "");
   assert.equal(paragraph?.style.wordBreak, "");
   assert.equal(paragraph?.style.fontSize, "18px");
-  assert.equal(table?.style.width, "640px");
+  assert.equal(table?.style.width, "");
   editorDom.remove();
 });
 
@@ -528,7 +574,7 @@ test("buildCodeClipboardPayload carries the current code style", () => {
   });
   const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
   assert.equal(parsed.querySelector("pre")?.style.fontSize, "20px");
-  assert.equal(parsed.querySelector("code")?.style.whiteSpace, "pre");
+  assert.equal(parsed.querySelector("code")?.style.whiteSpace, "pre-wrap");
 });
 
 test("getCodeClipboardSelection preserves CodeMirror linewise copy semantics", () => {

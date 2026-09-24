@@ -269,7 +269,7 @@ function copyClipboardImageSource(
   target.removeAttribute("data-clipboard-src");
 }
 
-// Text must reflow in the target; only bounded objects keep layout dimensions.
+// Text, tables, and code reflow in the target; media keeps intrinsic dimensions.
 const CLIPBOARD_LAYOUT_PROPERTIES = new Set([
   "width",
   "min-width",
@@ -301,11 +301,19 @@ const CLIPBOARD_LAYOUT_PROPERTIES = new Set([
   "transform",
 ]);
 
-const CLIPBOARD_LAYOUT_TAGS = new Set(["table", "th", "td", "img", "svg", "canvas", "pre", "code"]);
+// Only intrinsic media/code formatting survives; editor viewport geometry does not.
+const CLIPBOARD_LAYOUT_TAGS = new Set(["img", "svg", "canvas", "pre", "code"]);
 const CLIPBOARD_LAYOUT_CONTAINERS =
-  "table, .milkup-code-block-editor, .milkup-html-block-editor, .milkup-image-block, .milkup-mermaid-preview";
+  ".milkup-code-block-editor, .milkup-html-block-editor, .milkup-image-block, .milkup-mermaid-preview";
 const CLIPBOARD_FLOW_WRAP_STYLES = {
   "white-space": "normal",
+  "word-break": "normal",
+  "overflow-wrap": "break-word",
+} as const;
+const CLIPBOARD_VIEWPORT_GEOMETRY_ATTRIBUTES = ["width", "height", "cellwidth", "cellheight"];
+const CLIPBOARD_CODE_TAGS = new Set(["pre", "code"]);
+const CLIPBOARD_CODE_WRAP_STYLES = {
+  "white-space": "pre-wrap",
   "word-break": "normal",
   "overflow-wrap": "break-word",
 } as const;
@@ -376,6 +384,18 @@ function getNodeAtPath(root: Node, path: number[] | null): Node | null {
   return current;
 }
 
+function normalizeClipboardCodeLayout(element: Element): void {
+  for (const attribute of CLIPBOARD_VIEWPORT_GEOMETRY_ATTRIBUTES) {
+    element.removeAttribute(attribute);
+  }
+  for (const property of CLIPBOARD_LAYOUT_PROPERTIES) {
+    (element as HTMLElement).style.removeProperty(property);
+  }
+  for (const [property, value] of Object.entries(CLIPBOARD_CODE_WRAP_STYLES)) {
+    (element as HTMLElement).style.setProperty(property, value);
+  }
+}
+
 function sanitizeClipboardFlowDom(root: HTMLElement): void {
   const elements: Element[] = [root, ...Array.from(root.querySelectorAll("*"))];
   for (const element of elements) {
@@ -383,7 +403,15 @@ function sanitizeClipboardFlowDom(root: HTMLElement): void {
       element.remove();
       continue;
     }
-    if (shouldPreserveClipboardLayout(element)) continue;
+    if (shouldPreserveClipboardLayout(element)) {
+      if (CLIPBOARD_CODE_TAGS.has(element.tagName.toLowerCase())) {
+        normalizeClipboardCodeLayout(element);
+      }
+      continue;
+    }
+    for (const attribute of CLIPBOARD_VIEWPORT_GEOMETRY_ATTRIBUTES) {
+      element.removeAttribute(attribute);
+    }
     for (const property of CLIPBOARD_LAYOUT_PROPERTIES) {
       (element as HTMLElement).style.removeProperty(property);
     }
