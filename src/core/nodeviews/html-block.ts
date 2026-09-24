@@ -13,6 +13,13 @@ import { EditorState as CMEditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { html } from "@codemirror/lang-html";
 import { createThemeExtension, detectDarkTheme } from "./code-block";
+import {
+  buildClipboardPayload,
+  createCodeClipboardExtension,
+  getClipboardFontFamilies,
+  type ClipboardPayload,
+} from "../clipboard";
+import { sourceViewManager } from "../decorations";
 import { resolveImageSrc } from "../utils/image-path";
 
 // 存储所有 HtmlBlockView 实例，用于全局更新
@@ -219,6 +226,10 @@ export class HtmlBlockView implements NodeView {
           ]),
           this.themeCompartment.of(createThemeExtension(isDark)),
           html(),
+          createCodeClipboardExtension(
+            () => !this.view.editable,
+            (text) => this.createHtmlClipboardPayload(text)
+          ),
           EditorView.updateListener.of((update) => this.onCMUpdate(update)),
           EditorView.domEventHandlers({
             focus: () => this.forwardSelection(),
@@ -251,6 +262,20 @@ export class HtmlBlockView implements NodeView {
     } else {
       this.preview.innerHTML = '<span class="html-placeholder">输入 HTML...</span>';
     }
+  }
+
+  private createHtmlClipboardPayload(text: string): ClipboardPayload {
+    const sourceView = sourceViewManager.getState();
+    if (sourceView) return buildClipboardPayload(text, null, { sourceView: true });
+
+    const parsed = new DOMParser().parseFromString(text, "text/html");
+    const root = this.dom.ownerDocument.createElement("div");
+    while (parsed.body.firstChild) root.appendChild(parsed.body.firstChild);
+
+    return buildClipboardPayload(text, root, {
+      sourceView: false,
+      ...getClipboardFontFamilies(this.dom, this.cm.contentDOM),
+    });
   }
 
   updateEditingState(selFrom: number, selTo: number): void {
@@ -428,7 +453,8 @@ export class HtmlBlockView implements NodeView {
     // 由 updateEditingState 统一处理
   }
 
-  stopEvent(): boolean {
+  stopEvent(event: Event): boolean {
+    if (event.type === "copy" || event.type === "cut") return false;
     return true;
   }
 

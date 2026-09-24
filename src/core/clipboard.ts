@@ -548,25 +548,61 @@ export async function writeClipboardPayload(
   return { status: "failed" };
 }
 
-export function createCodeClipboardExtension(isReadOnly: () => boolean = () => false): Extension {
+type CodeClipboardRange = { from: number; to: number };
+type CodeClipboardPayloadBuilder = (text: string, view: CodeMirrorView) => ClipboardPayload;
+
+export function createCodeClipboardExtension(
+  isReadOnly: () => boolean = () => false,
+  buildPayload: CodeClipboardPayloadBuilder = (text, view) =>
+    buildCodeClipboardPayload(text, getCodeClipboardOptions(view))
+): Extension {
   return Prec.highest(
     CodeMirrorView.domEventHandlers({
-      copy: (event, view) => writeCodeClipboard(event as ClipboardEvent, view, isReadOnly),
-      cut: (event, view) => writeCodeClipboard(event as ClipboardEvent, view, isReadOnly),
+      copy: (event, view) =>
+        writeCodeClipboard(event as ClipboardEvent, view, isReadOnly, buildPayload),
+      cut: (event, view) =>
+        writeCodeClipboard(event as ClipboardEvent, view, isReadOnly, buildPayload),
     })
   );
+}
+
+export function getCodeClipboardSelection(view: CodeMirrorView): {
+  text: string;
+  ranges: CodeClipboardRange[];
+} {
+  const selectedRanges = view.state.selection.ranges.filter((range) => !range.empty);
+  if (selectedRanges.length > 0) {
+    return {
+      text: selectedRanges
+        .map((range) => view.state.sliceDoc(range.from, range.to))
+        .join(view.state.lineBreak),
+      ranges: selectedRanges.map((range) => ({ from: range.from, to: range.to })),
+    };
+  }
+
+  const ranges: CodeClipboardRange[] = [];
+  const lines: string[] = [];
+  let lastLineNumber = -1;
+  for (const range of view.state.selection.ranges) {
+    const line = view.state.doc.lineAt(range.from);
+    if (line.number <= lastLineNumber) continue;
+    lastLineNumber = line.number;
+    ranges.push({ from: line.from, to: Math.min(view.state.doc.length, line.to + 1) });
+    lines.push(line.text);
+  }
+
+  return { text: lines.join(view.state.lineBreak), ranges };
 }
 
 function writeCodeClipboard(
   event: ClipboardEvent,
   view: CodeMirrorView,
-  isReadOnly: () => boolean
+  isReadOnly: () => boolean,
+  buildPayload: CodeClipboardPayloadBuilder
 ): boolean {
-  const data = event.clipboardData;
   const selection = document.getSelection();
   const anchor = selection?.anchorNode;
   const focus = selection?.focusNode;
-  const ranges = view.state.selection.ranges.filter((range) => !range.empty);
   const selectionIsInside =
     !!anchor && !!focus && view.contentDOM.contains(anchor) && view.contentDOM.contains(focus);
 
@@ -578,12 +614,16 @@ function writeCodeClipboard(
     return true;
   }
 
-  if (!data || ranges.length === 0) return false;
+  const { text, ranges } = getCodeClipboardSelection(view);
+  if (!event.clipboardData || ranges.length === 0) {
+    if (event.type === "cut") {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
 
-  const payload = buildCodeClipboardPayload(
-    ranges.map((range) => view.state.sliceDoc(range.from, range.to)).join(view.state.lineBreak),
-    getCodeClipboardOptions(view)
-  );
+  const payload = buildPayload(text, view);
   const result = writeClipboardEvent(event, payload);
   if (event.type === "cut" && !canDeleteAfterClipboardWrite(payload, result)) {
     event.preventDefault();

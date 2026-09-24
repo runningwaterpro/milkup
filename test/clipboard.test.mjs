@@ -6,6 +6,7 @@ import {
   buildCodeClipboardPayload,
   canDeleteAfterClipboardWrite,
   getClipboardFontFamilies,
+  getCodeClipboardSelection,
   getRenderedNodeRoot,
   getRenderedSelectionRoot,
   semanticizeClipboardDom,
@@ -295,6 +296,24 @@ test("buildCodeClipboardPayload carries the current code style", () => {
   const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
   assert.equal(parsed.querySelector("pre")?.style.fontSize, "20px");
   assert.equal(parsed.querySelector("code")?.style.whiteSpace, "pre");
+});
+
+test("getCodeClipboardSelection preserves CodeMirror linewise copy semantics", () => {
+  const view = {
+    state: {
+      selection: { ranges: [{ empty: true, from: 2 }] },
+      doc: {
+        length: 8,
+        lineAt: () => ({ number: 1, from: 0, to: 3, text: "one" }),
+      },
+      lineBreak: "\n",
+    },
+  };
+
+  assert.deepEqual(getCodeClipboardSelection(view), {
+    text: "one",
+    ranges: [{ from: 0, to: 4 }],
+  });
 });
 
 test("writeClipboardEvent writes both formats and reports a rich result", () => {
