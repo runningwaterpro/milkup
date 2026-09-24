@@ -8,6 +8,7 @@ import {
   getClipboardFontFamilies,
   getCodeClipboardSelection,
   getRenderedNodeRoot,
+  hasRenderedClipboardNode,
   getRenderedSelectionRoot,
   semanticizeClipboardDom,
   writeClipboardEvent,
@@ -149,6 +150,18 @@ test("getRenderedSelectionRoot clones visible DOM and drops editor controls", ()
   editorDom.remove();
 });
 
+test("hasRenderedClipboardNode detects bounded nodes in cross-block slices", () => {
+  const fragment = (names) => ({
+    descendants(callback) {
+      for (const name of names) callback({ type: { name } });
+    },
+  });
+
+  assert.equal(hasRenderedClipboardNode(fragment(["paragraph", "code_block"])), true);
+  assert.equal(hasRenderedClipboardNode(fragment(["paragraph", "html_block"])), true);
+  assert.equal(hasRenderedClipboardNode(fragment(["paragraph"])), false);
+});
+
 test("getRenderedSelectionRoot drops prose layout but keeps table dimensions", () => {
   const editorDom = makeRoot(
     '<p style="width: 320px; max-width: 320px; height: 100px; white-space: pre-wrap; font-size: 18px;">text</p>' +
@@ -173,7 +186,52 @@ test("getRenderedSelectionRoot drops prose layout but keeps table dimensions", (
   editorDom.remove();
 });
 
-test("getRenderedSelectionRoot normalizes an HTML block editor", () => {
+test("getRenderedSelectionRoot keeps prose-to-code selections in one rich fragment", () => {
+  const editorDom = makeRoot(
+    '<p>before</p><div class="milkup-code-block"><div class="milkup-code-block-header">JavaScript</div>' +
+      '<div class="milkup-code-block-editor"><div class="cm-gutters">1</div>' +
+      '<div class="cm-content"><div class="cm-line">const value = 1</div></div></div></div>'
+  );
+  document.body.appendChild(editorDom);
+  const range = document.createRange();
+  range.setStart(editorDom.querySelector("p").firstChild, 0);
+  range.setEnd(
+    editorDom.querySelector(".cm-line").firstChild,
+    editorDom.querySelector(".cm-line").textContent.length
+  );
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  const result = getRenderedSelectionRoot({ dom: editorDom });
+  assert.equal(result?.querySelector("p")?.textContent, "before");
+  assert.equal(result?.querySelector("pre code")?.textContent, "const value = 1");
+  assert.equal(result?.querySelector(".milkup-code-block-header"), null);
+  assert.equal(result?.querySelector(".cm-gutters"), null);
+  editorDom.remove();
+});
+
+test("getRenderedSelectionRoot keeps prose-to-HTML selections rendered", () => {
+  const editorDom = makeRoot(
+    '<p>before</p><div class="milkup-html-block"><div class="milkup-html-block-preview"><b>after</b></div>' +
+      '<div class="milkup-html-block-editor" style="display:none"><div class="cm-content"><div class="cm-line">&lt;b&gt;after&lt;/b&gt;</div></div></div></div>'
+  );
+  document.body.appendChild(editorDom);
+  const range = document.createRange();
+  range.setStart(editorDom.querySelector("p").firstChild, 0);
+  range.setEnd(editorDom.querySelector("b").firstChild, 5);
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  const result = getRenderedSelectionRoot({ dom: editorDom });
+  assert.equal(result?.querySelector("p")?.textContent, "before");
+  assert.equal(result?.querySelector("b")?.textContent, "after");
+  assert.equal(result?.querySelector(".milkup-html-block-editor"), null);
+  editorDom.remove();
+});
+
+test("getRenderedSelectionRoot renders an HTML block editor semantically", () => {
   const editorDom = makeRoot(
     '<div class="milkup-html-block-editor"><div class="cm-gutters">1</div>' +
       '<div class="cm-content"><div class="cm-line">&lt;b&gt;x&lt;/b&gt;</div></div></div>'
@@ -186,7 +244,8 @@ test("getRenderedSelectionRoot normalizes an HTML block editor", () => {
   selection.addRange(range);
 
   const result = getRenderedSelectionRoot({ dom: editorDom });
-  assert.equal(result?.querySelector("pre code")?.textContent, "<b>x</b>");
+  assert.equal(result?.querySelector("b")?.textContent, "x");
+  assert.equal(result?.querySelector("pre code"), null);
   assert.equal(result?.querySelector(".cm-gutters"), null);
   editorDom.remove();
 });

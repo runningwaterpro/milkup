@@ -1,11 +1,29 @@
 import { Prec } from "@codemirror/state";
 import { EditorView as CodeMirrorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
+import type { Fragment } from "prosemirror-model";
 import type { EditorView as ProseMirrorView } from "prosemirror-view";
 import { decodeHtmlEntity, HTML_ENTITY_SYNTAX_TYPE } from "./utils/html-entities.ts";
 import type { ImagePasteMethod } from "./plugins/paste";
 
 const CELL_BORDER = "1px solid #cccccc";
+
+export const RENDERED_CLIPBOARD_NODE_TYPES = new Set([
+  "table",
+  "image",
+  "code_block",
+  "math_block",
+  "html_block",
+]);
+
+export function hasRenderedClipboardNode(fragment: Fragment): boolean {
+  let found = false;
+  fragment.descendants((node) => {
+    if (RENDERED_CLIPBOARD_NODE_TYPES.has(node.type.name)) found = true;
+    return !found;
+  });
+  return found;
+}
 
 export interface ClipboardBuildOptions {
   sourceView?: boolean;
@@ -331,11 +349,29 @@ function cleanRenderedClipboardDom(root: HTMLElement): void {
       editor.remove();
       continue;
     }
-    const pre = root.ownerDocument.createElement("pre");
-    const code = root.ownerDocument.createElement("code");
-    code.textContent = Array.from(content.querySelectorAll(".cm-line"))
+    const text = Array.from(content.querySelectorAll(".cm-line"))
       .map((line) => line.textContent || "")
       .join("\n");
+    if (editor.classList.contains("milkup-html-block-editor")) {
+      try {
+        const Parser =
+          root.ownerDocument.defaultView?.DOMParser ??
+          (typeof DOMParser !== "undefined" ? DOMParser : null);
+        if (Parser) {
+          const parsed = new Parser().parseFromString(text, "text/html");
+          const rendered = root.ownerDocument.createElement("div");
+          while (parsed.body.firstChild) rendered.appendChild(parsed.body.firstChild);
+          editor.replaceWith(rendered);
+          continue;
+        }
+      } catch {
+        // Fall through to a source-code fragment if the browser cannot parse it.
+      }
+    }
+
+    const pre = root.ownerDocument.createElement("pre");
+    const code = root.ownerDocument.createElement("code");
+    code.textContent = text;
     pre.style.cssText = content.style.cssText;
     code.style.cssText = content.style.cssText;
     pre.appendChild(code);

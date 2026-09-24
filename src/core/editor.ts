@@ -23,6 +23,7 @@ import {
   getClipboardFontFamilies,
   getRenderedNodeRoot,
   getRenderedSelectionRoot,
+  hasRenderedClipboardNode,
   writeClipboardEvent,
   writeClipboardPayload,
   type ClipboardPayload,
@@ -131,25 +132,8 @@ const defaultConfig: MilkupConfig = {
 };
 
 // Flow text uses ProseMirror's semantic clipboard DOM; live DOM is for bounded nodes.
-const RENDERED_CLIPBOARD_NODE_TYPES = new Set([
-  "table",
-  "image",
-  "code_block",
-  "math_block",
-  "html_block",
-]);
-
 function shouldUseRenderedClipboardDom(view: EditorView): boolean {
-  const fragment = view.state.selection.content().content;
-  if (fragment.childCount !== 1) return false;
-
-  const first = fragment.firstChild;
-  if (!first) return false;
-  if (RENDERED_CLIPBOARD_NODE_TYPES.has(first.type.name)) return true;
-  if (first.type.name !== "paragraph" || first.childCount !== 1) return false;
-
-  const child = first.firstChild;
-  return !!child && RENDERED_CLIPBOARD_NODE_TYPES.has(child.type.name);
+  return hasRenderedClipboardNode(view.state.selection.content().content);
 }
 
 /**
@@ -825,7 +809,7 @@ export class MilkupEditor implements IMilkupEditor {
 
   /** 复制时保留当前表格选区的纯文本规则，并同时写入富文本。 */
   private handleCopy(view: EditorView, event: ClipboardEvent): boolean {
-    if (this.isClipboardEventFromCodeBlock(event) || view.state.selection.empty) return false;
+    if (this.isClipboardEventFromCodeBlock(view, event) || view.state.selection.empty) return false;
 
     const plain = this.serializeSelectionForClipboard();
     return this.writeNativeClipboard(view, event, plain, false);
@@ -833,7 +817,11 @@ export class MilkupEditor implements IMilkupEditor {
 
   /** 剪切只在双格式载荷写入成功后修改文档。 */
   private handleCut(view: EditorView, event: ClipboardEvent): boolean {
-    if (this.isClipboardEventFromCodeBlock(event) || !view.editable || view.state.selection.empty) {
+    if (
+      this.isClipboardEventFromCodeBlock(view, event) ||
+      !view.editable ||
+      view.state.selection.empty
+    ) {
       return false;
     }
 
@@ -861,9 +849,20 @@ export class MilkupEditor implements IMilkupEditor {
     return true;
   }
 
-  private isClipboardEventFromCodeBlock(event: ClipboardEvent): boolean {
+  private isClipboardEventFromCodeBlock(view: EditorView, event: ClipboardEvent): boolean {
     const target = event.target as Element | null;
-    return !!target?.closest?.(".milkup-code-block");
+    if (!target?.closest?.(".milkup-code-block")) return false;
+
+    const { from, to } = view.state.selection;
+    let selectionInsideCodeBlock = false;
+    view.state.doc.nodesBetween(from, to, (node, pos) => {
+      if (node.type.name === "code_block" && from >= pos && to <= pos + node.nodeSize) {
+        selectionInsideCodeBlock = true;
+        return false;
+      }
+      return !selectionInsideCodeBlock;
+    });
+    return selectionInsideCodeBlock;
   }
 
   private getClipboardImageMode(): ImagePasteMethod {
@@ -1111,17 +1110,16 @@ export class MilkupEditor implements IMilkupEditor {
         if (!this.view.editable) return;
 
         const state = this.view.state;
-        const { from, to } = state.selection;
         const plain = this.serializeSelectionForClipboard();
         const payload = this.createRichClipboardPayload(this.view, plain);
         const result = await writeClipboardPayload(payload);
-        const canDelete = canDeleteAfterClipboardWrite(payload, result);
+        const canDelete =
+          this.view.editable && canDeleteAfterClipboardWrite(payload, result);
         const selection = this.view.state.selection;
         if (
           canDelete &&
           this.view.state.doc === state.doc &&
-          selection.from === from &&
-          selection.to === to
+          selection.eq(state.selection)
         ) {
           this.view.dispatch(
             this.view.state.tr.deleteSelection().scrollIntoView().setMeta("uiEvent", "cut")

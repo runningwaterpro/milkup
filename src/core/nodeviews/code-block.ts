@@ -1272,10 +1272,10 @@ export class CodeBlockView implements NodeView {
         const result = await writeClipboardPayload(payload);
         const current = this.cm.state.selection.main;
         if (
+          !this.isReadOnly() &&
           canDeleteAfterClipboardWrite(payload, result) &&
           this.cm.state.doc === state.doc &&
-          current.from === from &&
-          current.to === to
+          current.eq(state.selection.main)
         ) {
           this.cm.dispatch({
             changes: { from, to, insert: "" },
