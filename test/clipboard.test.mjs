@@ -197,6 +197,46 @@ test("hasRenderedClipboardNode detects bounded nodes in cross-block slices", () 
   assert.equal(hasRenderedClipboardNode(fragment(["paragraph"])), false);
 });
 
+test("semantic clipboard flow removes editor hard-wrap and width styles", () => {
+  const root = makeRoot(
+    '<p style="white-space: pre-wrap; word-break: break-all; overflow-wrap: normal; width: 320px; max-width: 320px; height: 100px;">这是一段需要自适应换行的长文本。</p>'
+  );
+  root.style.whiteSpace = "pre-wrap";
+  root.style.width = "800px";
+  const payload = buildClipboardPayload("这是一段需要自适应换行的长文本。", root);
+  const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+  const host = parsed.body.firstElementChild;
+  const paragraph = parsed.querySelector("p");
+
+  assert.equal(host?.style.whiteSpace, "normal");
+  assert.equal(host?.style.width, "");
+  assert.equal(paragraph?.style.whiteSpace, "normal");
+  assert.equal(paragraph?.style.wordBreak, "normal");
+  assert.equal(paragraph?.style.overflowWrap, "break-word");
+  assert.equal(paragraph?.style.width, "");
+  assert.equal(paragraph?.style.maxWidth, "");
+  assert.equal(paragraph?.style.height, "");
+});
+
+test("rendered mixed selections keep code layout without leaking it into prose", () => {
+  const editorDom = makeRoot(
+    '<p style="white-space: pre-wrap; word-break: break-all; width: 320px">before</p>' +
+      '<pre style="white-space: pre"><code>const value = 1</code></pre>'
+  );
+  document.body.appendChild(editorDom);
+  const range = document.createRange();
+  range.selectNodeContents(editorDom);
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  const result = getRenderedSelectionRoot({ dom: editorDom });
+  assert.equal(result?.querySelector("p")?.style.whiteSpace, "");
+  assert.equal(result?.querySelector("p")?.style.wordBreak, "");
+  assert.equal(result?.querySelector("pre")?.style.whiteSpace, "pre");
+  editorDom.remove();
+});
+
 test("getRenderedSelectionRoot drops prose layout but keeps table dimensions", () => {
   const editorDom = makeRoot(
     '<p style="width: 320px; max-width: 320px; height: 100px; white-space: pre-wrap; font-size: 18px;">text</p>' +
@@ -216,6 +256,7 @@ test("getRenderedSelectionRoot drops prose layout but keeps table dimensions", (
   assert.equal(paragraph?.style.maxWidth, "");
   assert.equal(paragraph?.style.height, "");
   assert.equal(paragraph?.style.whiteSpace, "");
+  assert.equal(paragraph?.style.wordBreak, "");
   assert.equal(paragraph?.style.fontSize, "18px");
   assert.equal(table?.style.width, "640px");
   editorDom.remove();

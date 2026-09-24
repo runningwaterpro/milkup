@@ -304,6 +304,11 @@ const CLIPBOARD_LAYOUT_PROPERTIES = new Set([
 const CLIPBOARD_LAYOUT_TAGS = new Set(["table", "th", "td", "img", "svg", "canvas", "pre", "code"]);
 const CLIPBOARD_LAYOUT_CONTAINERS =
   "table, .milkup-code-block-editor, .milkup-html-block-editor, .milkup-image-block, .milkup-mermaid-preview";
+const CLIPBOARD_FLOW_WRAP_STYLES = {
+  "white-space": "normal",
+  "word-break": "normal",
+  "overflow-wrap": "break-word",
+} as const;
 
 function shouldPreserveClipboardLayout(source: Element): boolean {
   const tag = source.tagName.toLowerCase();
@@ -358,6 +363,23 @@ function getNodeAtPath(root: Node, path: number[] | null): Node | null {
     if (!current) return null;
   }
   return current;
+}
+
+function sanitizeClipboardFlowDom(root: HTMLElement): void {
+  const elements: Element[] = [root, ...Array.from(root.querySelectorAll("*"))];
+  for (const element of elements) {
+    if (isClipboardElementHidden(element)) {
+      element.remove();
+      continue;
+    }
+    if (shouldPreserveClipboardLayout(element)) continue;
+    for (const property of CLIPBOARD_LAYOUT_PROPERTIES) {
+      (element as HTMLElement).style.removeProperty(property);
+    }
+    for (const [property, value] of Object.entries(CLIPBOARD_FLOW_WRAP_STYLES)) {
+      (element as HTMLElement).style.setProperty(property, value);
+    }
+  }
 }
 
 function cleanRenderedClipboardDom(root: HTMLElement): void {
@@ -492,6 +514,7 @@ export function semanticizeClipboardDom(
     }
   }
 
+  sanitizeClipboardFlowDom(root);
   return root;
 }
 
