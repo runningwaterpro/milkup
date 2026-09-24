@@ -103,15 +103,6 @@ onMounted(async () => {
   })
   const editor = crepe.editor
   editor.ctx.inject(uploadConfig.key)
-  // 粘贴 HTML：ol start=0/空 → ≥1（仅改粘贴输入，不动 appendTransaction，避免卡死编辑器）
-  editor.ctx.update(editorViewOptionsCtx, prev => ({
-    ...prev,
-    transformPastedHTML: (html: string, view: never) => {
-      const prevFn = prev.transformPastedHTML
-      const out = prevFn ? prevFn.call(view, html, view as never) : html
-      return normalizeOlStartHtml(out)
-    },
-  }))
   editor
     .use(automd)
     .use(upload)
@@ -124,6 +115,16 @@ onMounted(async () => {
   }
 
   await crepe.create()
+
+  // 必须在 create 之后：editorViewOptions 要等内部插件注入
+  editor.ctx.update(editorViewOptionsCtx, prev => ({
+    ...prev,
+    transformPastedHTML: (html: string, view: never) => {
+      const prevFn = prev.transformPastedHTML
+      const out = prevFn ? prevFn.call(view, html, view as never) : html
+      return normalizeOlStartHtml(out)
+    },
+  }))
 
   editor.ctx.update(uploadConfig.key, prev => ({ ...prev, uploader }))
   detachClipboard = bindDualClipboard(editor.ctx)
