@@ -2,12 +2,12 @@
 import type { Ctx } from '@milkdown/kit/ctx'
 import { vue } from '@codemirror/lang-vue'
 import { Crepe } from '@milkdown/crepe'
-import { editorViewCtx, editorViewOptionsCtx, prosePluginsCtx, serializerCtx } from '@milkdown/kit/core'
+import { editorViewCtx, editorViewOptionsCtx, serializerCtx } from '@milkdown/kit/core'
 import { upload, uploadConfig } from '@milkdown/kit/plugin/upload'
 import { outline } from '@milkdown/kit/utils'
 import { automd } from '@milkdown/plugin-automd'
 import { commonmark } from '@milkdown/preset-commonmark'
-import { Plugin, TextSelection } from '@milkdown/prose/state'
+import { TextSelection } from '@milkdown/prose/state'
 import { enhanceConfig } from '@renderer/enhance/crepe/config'
 import { buildClipboardPayload, normalizeOlStartHtml, selectionStyleHost } from '@renderer/utils/clipboardPayload'
 import { nextTick, onBeforeUnmount, onMounted } from 'vue'
@@ -103,36 +103,15 @@ onMounted(async () => {
   })
   const editor = crepe.editor
   editor.ctx.inject(uploadConfig.key)
-  // 粘贴：ol start=0/空 → ≥1（Typora→Milkup 后序号变 0 的根因）
+  // 粘贴 HTML：ol start=0/空 → ≥1（仅改粘贴输入，不动 appendTransaction，避免卡死编辑器）
   editor.ctx.update(editorViewOptionsCtx, prev => ({
     ...prev,
     transformPastedHTML: (html: string, view: never) => {
-      const next = prev.transformPastedHTML
-      return normalizeOlStartHtml(next ? next.call(view, html, view) : html)
+      const prevFn = prev.transformPastedHTML
+      const out = prevFn ? prevFn.call(view, html, view as never) : html
+      return normalizeOlStartHtml(out)
     },
   }))
-  // 文档内 order&lt;1 一律夹到 1（含 markdown 解析结果）
-  editor.ctx.update(prosePluginsCtx, plugins => [
-    ...plugins,
-    new Plugin({
-      appendTransaction: (_trs, _old, newState) => {
-        const fixes: number[] = []
-        newState.doc.descendants((node, pos) => {
-          if (node.type.name === 'ordered_list' && !(Number(node.attrs.order) >= 1))
-            fixes.push(pos)
-        })
-        if (!fixes.length)
-          return null
-        const tr = newState.tr
-        for (const pos of fixes) {
-          const node = newState.doc.nodeAt(pos)
-          if (node)
-            tr.setNodeMarkup(pos, undefined, { ...node.attrs, order: 1 })
-        }
-        return tr.setMeta('addToHistory', false)
-      },
-    }),
-  ])
   editor
     .use(automd)
     .use(upload)
