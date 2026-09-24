@@ -146,9 +146,7 @@ function bindDualClipboard(ctx: Ctx): () => void {
     const host = selectionStyleHost(view.dom)
     const payload = buildClipboardPayload(markdown, host)
     e.clipboardData.setData('text/plain', payload.plain)
-    if (payload.html)
-      e.clipboardData.setData('text/html', payload.html)
-    // 阻止 ProseMirror 再 clearData() 覆盖成无样式 HTML
+    e.clipboardData.setData('text/html', payload.html)
     e.stopImmediatePropagation()
     e.preventDefault()
     if (e.type === 'cut')

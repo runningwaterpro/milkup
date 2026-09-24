@@ -5,26 +5,22 @@ export interface ClipboardPayload {
   html: string
 }
 
-/**
- * 顶层块选择器：不含 li/td/th/tr，避免同一列表/表格被拆成多段。
- */
+/** 顶层块：不含 li/td/tr，避免拆碎列表/表格。 */
 const BLOCK_SELECTOR
   = 'p,h1,h2,h3,h4,h5,h6,blockquote,pre,table,ul,ol,hr'
 
-/** 邮件友好浅色基线（票 02）。 */
+/**
+ * 邮件安全无衬线：CJK 必须在前，否则中文落到宋体。
+ * ponytail: 不做主题跟随字体，邮件场景固定这一栈。
+ */
+const SANS_STACK
+  = '"Microsoft YaHei", "PingFang SC", "Helvetica Neue", Helvetica, Arial, sans-serif'
+
+const MONO_HINT = /monospace|consolas|courier new|menlo|var\(/i
 const LIGHT_COLOR = '#333333'
 const LIGHT_BG = 'rgb(255, 255, 255)'
+const BORDER = '1px solid #cccccc'
 
-/** 邮件安全无衬线栈（避免落入 Times 等衬线缺省）。 */
-const SANS_STACK
-  = 'Helvetica Neue, Helvetica, Arial, sans-serif'
-
-const MONO_HINT = /monospace|consolas|courier new|menlo/i
-const BORDER_COLOR = '#cccccc'
-
-/**
- * 主 seam：选区 Markdown + 选区根 → `{ plain, html }`。
- */
 export function buildClipboardPayload(
   markdown: string,
   selectionRoot: HTMLElement | null,
@@ -48,15 +44,9 @@ export function buildClipboardPayload(
     }
   }
 
-  stripEditorChrome(host)
-  applyLightBaseline(host)
-  applyEmailTableBorders(host)
-  applyOrderedListsStartFromOne(host)
-  applySansFontFallback(host)
-  return { plain, html: host.innerHTML }
+  return { plain, html: finalizeEmailHtml(host) }
 }
 
-/** 从编辑器 DOM + Selection 收集相交的顶层块。 */
 export function selectionStyleHost(editorDom: HTMLElement): HTMLElement | null {
   const sel = globalThis.getSelection?.()
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed)
@@ -78,29 +68,59 @@ export function selectionStyleHost(editorDom: HTMLElement): HTMLElement | null {
       host.appendChild(cloneWithInlineStyles(el))
   }
 
-  if (!host.childElementCount)
-    return null
+  return host.childElementCount ? host : null
+}
 
+/**
+ * 唯一出口：编辑器 HTML → 邮件可用 HTML。
+ * 字体/表格线/列表起号都在这里做一次，避免调用方漏挂。
+ */
+function finalizeEmailHtml(host: HTMLElement): string {
   stripEditorChrome(host)
   applyLightBaseline(host)
-  applyEmailTableBorders(host)
-  applyOrderedListsStartFromOne(host)
-  applySansFontFallback(host)
-  return host
+
+  // 表格：编辑器常靠 class 画线，计算样式无 border → 必须写死
+  for (const table of host.querySelectorAll('table')) {
+    table.style.borderCollapse = 'collapse'
+    table.style.border = BORDER
+  }
+  for (const cell of host.querySelectorAll('th,td')) {
+    cell.style.border = BORDER
+    if (!cell.style.padding)
+      cell.style.padding = '4px 8px'
+  }
+
+  for (const ol of host.querySelectorAll('ol')) {
+    const raw = ol.getAttribute('start')
+    const n = raw === null || raw.trim() === '' ? 1 : Number(raw)
+    ol.setAttribute('start', String(Number.isFinite(n) && n > 0 ? n : 1))
+  }
+
+  // 字体：一律换成 CJK 优先 sans（含原本已是 Helvetica sans 的，否则中文仍宋体）
+  host.style.fontFamily = SANS_STACK
+  for (const el of host.querySelectorAll<HTMLElement>('*')) {
+    const tag = el.tagName.toLowerCase()
+    if (tag === 'pre' || tag === 'code' || tag === 'kbd' || tag === 'samp')
+      continue
+    const ff = el.style.fontFamily || ''
+    if (MONO_HINT.test(ff) && !/sans-serif/i.test(ff))
+      continue
+    el.style.fontFamily = SANS_STACK
+  }
+
+  // innerHTML 会丢掉 host 自身 style → 包一层保证根上有字体
+  return `<div style="font-family: ${SANS_STACK};">${host.innerHTML}</div>`
 }
 
 function stripEditorChrome(root: HTMLElement): void {
   root.querySelectorAll(
     '.milkdown-block-handle,.crepe-drop-cursor,.milkdown-toolbar,.milkdown-link-preview,.milkdown-link-edit,.milkdown-slash-menu,[data-ignore]',
   ).forEach(n => n.remove())
-  root.querySelectorAll('[contenteditable]').forEach((n) => {
-    n.removeAttribute('contenteditable')
-  })
+  root.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'))
 }
 
 function applyLightBaseline(root: HTMLElement): void {
-  const nodes = [root, ...root.querySelectorAll<HTMLElement>('*')]
-  for (const el of nodes) {
+  for (const el of [root, ...root.querySelectorAll<HTMLElement>('*')]) {
     const bg = el.style.backgroundColor || getComputedStyle(el).backgroundColor
     const color = el.style.color || getComputedStyle(el).color
     if (isDark(bg))
@@ -110,54 +130,9 @@ function applyLightBaseline(root: HTMLElement): void {
   }
 }
 
-/** 邮箱里表格常丢网格：强制 table/th/td 内联边框。 */
-function applyEmailTableBorders(root: HTMLElement): void {
-  root.querySelectorAll('table').forEach((table) => {
-    table.style.borderCollapse = 'collapse'
-    table.style.border = `1px solid ${BORDER_COLOR}`
-  })
-  root.querySelectorAll('th,td').forEach((cell) => {
-    cell.style.border = `1px solid ${BORDER_COLOR}`
-    if (!cell.style.padding)
-      cell.style.padding = '4px 8px'
-  })
-}
-
-/** 有序列表：start 缺失或 <=0 时改为 1（用户显式 >=1 保留）。 */
-function applyOrderedListsStartFromOne(root: HTMLElement): void {
-  root.querySelectorAll('ol').forEach((ol) => {
-    const raw = ol.getAttribute('start')
-    if (raw === null || raw.trim() === '') {
-      ol.setAttribute('start', '1')
-      return
-    }
-    const n = Number(raw)
-    if (Number.isFinite(n) && n <= 0)
-      ol.setAttribute('start', '1')
-  })
-}
-
-/** 无衬线兜底：根与非等宽元素补 Helvetica/Arial 栈。 */
-function applySansFontFallback(root: HTMLElement): void {
-  root.style.fontFamily = SANS_STACK
-  const nodes = root.querySelectorAll<HTMLElement>('*')
-  for (const el of nodes) {
-    const tag = el.tagName.toLowerCase()
-    if (tag === 'pre' || tag === 'code' || tag === 'kbd' || tag === 'samp')
-      continue
-    const ff = el.style.fontFamily || getComputedStyle(el).fontFamily
-    const isSans = /sans-serif/i.test(ff)
-    const isMono = MONO_HINT.test(ff)
-    if (!isSans && !isMono)
-      el.style.fontFamily = SANS_STACK
-  }
-}
-
 function parseRgb(value: string): [number, number, number] | null {
   const m = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
-  if (!m)
-    return null
-  return [Number(m[1]), Number(m[2]), Number(m[3])]
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
 }
 
 function luminance([r, g, b]: [number, number, number]): number {
@@ -165,17 +140,13 @@ function luminance([r, g, b]: [number, number, number]): number {
 }
 
 function isDark(color: string): boolean {
-  const rgb = parseRgb(color)
-  if (!rgb)
-    return false
   if (color.includes('rgba') && color.includes(', 0)'))
     return false
-  return luminance(rgb) < 0.2
+  const rgb = parseRgb(color)
+  return !!rgb && luminance(rgb) < 0.2
 }
 
 function isVeryLight(color: string): boolean {
   const rgb = parseRgb(color)
-  if (!rgb)
-    return false
-  return luminance(rgb) > 0.85
+  return !!rgb && luminance(rgb) > 0.85
 }
