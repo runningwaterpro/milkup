@@ -136,14 +136,14 @@ function bindDualClipboard(ctx: Ctx): () => void {
       return
     const target = e.target as Node | null
     const inView = !!target && view.dom.contains(target)
-    if (!inView && !(document.activeElement && view.dom.contains(document.activeElement)))
+    if (!inView && !view.hasFocus() && !view.dom.contains(document.activeElement))
       return
     const sel = view.state.selection
     if (sel.empty)
       return
     const serializer = ctx.get(serializerCtx)
     const markdown = serializer(view.state.doc.slice(sel.from, sel.to))
-    const host = selectionStyleHost(view.dom)
+    const host = selectionStyleHost(view)
     const payload = buildClipboardPayload(markdown, host)
     e.clipboardData.setData('text/plain', payload.plain)
     e.clipboardData.setData('text/html', payload.html)

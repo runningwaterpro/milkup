@@ -1,3 +1,4 @@
+import type { EditorView } from '@milkdown/prose/view'
 import { cloneWithInlineStyles } from './inlineStyles'
 
 export interface ClipboardPayload {
@@ -47,28 +48,48 @@ export function buildClipboardPayload(
   return { plain, html: finalizeEmailHtml(host) }
 }
 
-export function selectionStyleHost(editorDom: HTMLElement): HTMLElement | null {
-  const sel = globalThis.getSelection?.()
-  if (!sel || sel.rangeCount === 0 || sel.isCollapsed)
+/**
+ * 以 ProseMirror 选区（而非 window.getSelection）收集顶层块。
+ * 外部粘贴进编辑器后，DOM Selection 常与 PM 选区不一致，会导致宿主为空。
+ */
+export function selectionStyleHost(view: EditorView): HTMLElement | null {
+  const { from, to } = view.state.selection
+  if (from === to)
     return null
 
-  const range = sel.getRangeAt(0)
+  const startBlock = closestBlock(view.domAtPos(from).node, view.dom)
+  const endBlock = closestBlock(view.domAtPos(to).node, view.dom)
+  if (!startBlock || !endBlock)
+    return null
+
+  const blocks = Array.from(view.dom.querySelectorAll(BLOCK_SELECTOR)) as HTMLElement[]
+  let i = blocks.indexOf(startBlock)
+  let j = blocks.indexOf(endBlock)
+  if (i < 0)
+    i = blocks.findIndex(b => b.contains(startBlock))
+  if (j < 0)
+    j = blocks.findIndex(b => b.contains(endBlock))
+  if (i < 0 || j < 0)
+    return null
+  if (i > j)
+    [i, j] = [j, i]
+
   const host = document.createElement('div')
   host.setAttribute('data-clipboard-host', '')
-
-  for (const block of editorDom.querySelectorAll(BLOCK_SELECTOR)) {
-    if (block instanceof HTMLElement && range.intersectsNode(block))
-      host.appendChild(cloneWithInlineStyles(block))
-  }
-
-  if (!host.childElementCount) {
-    const node = range.commonAncestorContainer
-    const el = node instanceof Element ? node : node.parentElement
-    if (el && editorDom.contains(el) && el instanceof HTMLElement)
-      host.appendChild(cloneWithInlineStyles(el))
-  }
+  for (let k = i; k <= j; k++)
+    host.appendChild(cloneWithInlineStyles(blocks[k]))
 
   return host.childElementCount ? host : null
+}
+
+function closestBlock(node: Node, root: HTMLElement): HTMLElement | null {
+  let el: Element | null = node instanceof Element ? node : node.parentElement
+  while (el && root.contains(el)) {
+    if (el.matches(BLOCK_SELECTOR))
+      return el as HTMLElement
+    el = el.parentElement
+  }
+  return null
 }
 
 /**
