@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Window } from "happy-dom";
@@ -46,6 +47,12 @@ after(async () => {
 });
 
 test("mixed editor copy writes reflowable HTML without viewport geometry", () => {
+  const editorStyles = document.createElement("style");
+  editorStyles.textContent = readFileSync(
+    new URL("../src/core/styles/milkup.css", import.meta.url),
+    "utf8"
+  );
+  document.head.appendChild(editorStyles);
   const container = document.createElement("div");
   document.body.appendChild(container);
   const editor = new MilkupEditor(container, {
@@ -79,7 +86,9 @@ test("mixed editor copy writes reflowable HTML without viewport geometry", () =>
     assert.equal(event.defaultPrevented, true);
     assert.deepEqual([...writes.keys()], ["text/plain", "text/html"]);
 
-    const parsed = new window.DOMParser().parseFromString(writes.get("text/html"), "text/html");
+    const html = writes.get("text/html");
+    assert.ok(html.length < 50_000, `clipboard HTML expanded to ${html.length} characters`);
+    const parsed = new window.DOMParser().parseFromString(html, "text/html");
     const table = parsed.querySelector("table");
     const cell = parsed.querySelector("td");
     assert.ok(table);
@@ -92,5 +101,6 @@ test("mixed editor copy writes reflowable HTML without viewport geometry", () =>
   } finally {
     editor.destroy();
     container.remove();
+    editorStyles.remove();
   }
 });

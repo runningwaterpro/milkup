@@ -348,13 +348,10 @@ function copyComputedStyles(source: Element, target: Element, imageMode?: ImageP
         (targetElement as HTMLElement).style.removeProperty(property);
       }
     }
-    if (typeof getComputedStyle === "function") {
+    // Flow nodes stay semantic; copying Chromium's full computed declaration set bloats CF_HTML.
+    if (preserveLayout && typeof getComputedStyle === "function") {
       const computed = getComputedStyle(sourceElement);
       for (const property of Array.from(computed)) {
-        if (!preserveLayout && CLIPBOARD_LAYOUT_PROPERTIES.has(property)) {
-          (targetElement as HTMLElement).style.removeProperty(property);
-          continue;
-        }
         const value = computed.getPropertyValue(property);
         if (value) (targetElement as HTMLElement).style.setProperty(property, value);
       }

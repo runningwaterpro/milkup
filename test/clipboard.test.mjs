@@ -164,6 +164,62 @@ test("resolveClipboardImageSource makes the three image modes explicit", () => {
   assert.equal(parsed.querySelector("img")?.getAttribute("src"), "https://example.com/image.png");
 });
 
+test("rendered flow content does not inline the editor's full computed style", () => {
+  const previousGetComputedStyle = globalThis.getComputedStyle;
+  const computedValues = {
+    color: "rgb(1, 2, 3)",
+    backgroundColor: "rgb(4, 5, 6)",
+    fontSize: "18px",
+    textAlign: "left",
+    cursor: "default",
+    userSelect: "none",
+    caretColor: "transparent",
+    display: "block",
+    visibility: "visible",
+    width: "640px",
+    whiteSpace: "pre",
+  };
+  for (let index = 0; index < 300; index += 1) {
+    computedValues[`--editor-internal-${index}`] = `${index}px`;
+  }
+  computedValues[Symbol.iterator] = function* () {
+    yield* Object.keys(computedValues);
+  };
+  const computedStyle = {
+    ...computedValues,
+    length: Object.keys(computedValues).length,
+    item: (index) => Object.keys(computedValues)[index] ?? "",
+    getPropertyValue: (property) => computedValues[property] ?? "",
+  };
+  globalThis.getComputedStyle = () => computedStyle;
+
+  const editorDom = makeRoot(
+    "<p>flow text</p><table><tbody><tr><td>cell</td></tr></tbody></table>"
+  );
+  document.body.appendChild(editorDom);
+  const range = document.createRange();
+  range.selectNodeContents(editorDom);
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  try {
+    const rendered = getRenderedSelectionRoot({ dom: editorDom });
+    const payload = buildClipboardPayload("flow text\ncell", rendered);
+    const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+    assert.ok(payload.html.length < 10_000, `clipboard HTML expanded to ${payload.html.length} characters`);
+    assert.doesNotMatch(payload.html, /--editor-internal-/);
+    assert.equal(parsed.querySelector("p")?.style.color, "");
+    assert.equal(parsed.querySelector("p")?.style.cursor, "");
+    assert.equal(parsed.querySelector("p")?.style.whiteSpace, "normal");
+    assert.equal(parsed.querySelector("table")?.style.width, "");
+  } finally {
+    editorDom.remove();
+    if (previousGetComputedStyle === undefined) delete globalThis.getComputedStyle;
+    else globalThis.getComputedStyle = previousGetComputedStyle;
+  }
+});
+
 test("getRenderedSelectionRoot clones visible DOM and drops editor controls", () => {
   const editorDom = makeRoot(
     '<div class="milkup-code-block"><div class="milkup-code-block-header">JavaScript</div>' +
