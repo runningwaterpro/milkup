@@ -246,6 +246,10 @@ function sendLaunchFileIfExists(argv = process.argv) {
   sendFilesToRenderer(argv.filter((arg) => isMarkdownFilePath(arg)));
 }
 
+// Acquire the lock before ready handlers can open a second window.
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) app.quit();
+
 // 注册自定义协议为特权协议
 protocol.registerSchemesAsPrivileged([
   {
@@ -260,6 +264,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  if (!gotTheLock) return;
+
   // 注册所有 IPC 处理程序（只注册一次，防止重复注册报错）
   registerGlobalIpcHandlers();
   registerIpcOnHandlers();
@@ -322,22 +328,17 @@ app.whenReady().then(async () => {
   sendLaunchFileIfExists();
 });
 
-// 单实例锁
-const gotTheLock = app.requestSingleInstanceLock();
-
-if (!gotTheLock) {
-  app.quit();
-} else {
+if (gotTheLock) {
   app.on("second-instance", (_event, argv) => {
     const targetWin = getAvailableWindow();
     if (targetWin) {
       if (targetWin.isMinimized()) targetWin.restore();
       targetWin.focus();
     }
-    // 处理通过命令行传入的文件路径
     sendLaunchFileIfExists(argv);
   });
 }
+
 // macOS 专用：Finder 打开文件时触发
 // 处理应用已运行时双击文件打开的情况
 app.on("open-file", (event, filePath) => {

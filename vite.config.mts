@@ -45,6 +45,7 @@ export default defineConfig({
   plugins: [vue(), i18nPlugin, electronPlugin],
   server: {
     open: false,
+    strictPort: true,
   },
   root: "src/renderer",
   base: "./",
