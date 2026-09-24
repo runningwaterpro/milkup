@@ -80,4 +80,39 @@ describe('buildClipboardPayload', () => {
     expect(payload.html).toContain('<h2')
     expect(payload.html).toContain('T')
   })
+
+  it('puts visible borders on table cells for email (网格线)', () => {
+    document.body.innerHTML
+      = '<table><tbody><tr><td style="color: rgb(1,2,3);">A</td></tr></tbody></table>'
+    const table = document.querySelector('table')!
+    const payload = buildClipboardPayload('| A |', table)
+    expect(payload.html).toMatch(/border(-collapse)?:[^;]*solid|border:\s*1px/i)
+    expect(payload.html).toMatch(/border[^;]*1px/i)
+  })
+
+  it('forces ordered list start at 1 when start is 0 or missing intent', () => {
+    document.body.innerHTML = '<ol start="0"><li>zero</li></ol>'
+    const ol = document.querySelector('ol')!
+    const payload = buildClipboardPayload('0. zero', ol)
+    expect(payload.html).toContain('<ol')
+    expect(payload.html).toMatch(/start="1"/)
+    expect(payload.html).not.toMatch(/start="0"/)
+  })
+
+  it('keeps explicit start when already >= 1', () => {
+    document.body.innerHTML = '<ol start="3"><li>x</li></ol>'
+    const ol = document.querySelector('ol')!
+    const payload = buildClipboardPayload('3. x', ol)
+    expect(payload.html).toMatch(/start="3"/)
+  })
+
+  it('applies sans-serif font-family fallback on clipboard html', () => {
+    document.body.innerHTML = '<p>NoExplicitFont</p>'
+    const p = document.querySelector('p')!
+    const payload = buildClipboardPayload('NoExplicitFont', p)
+    const html = payload.html.toLowerCase()
+    expect(html).toMatch(/font-family:|font:/)
+    expect(html).toMatch(/sans-serif/)
+    expect(html).not.toMatch(/times new roman/)
+  })
 })
