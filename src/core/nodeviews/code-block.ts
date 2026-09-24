@@ -50,10 +50,10 @@ import { sourceViewManager } from "../decorations";
 import { searchPluginKey } from "../plugins/search";
 import {
   buildCodeClipboardPayload,
-  cacheClipboardPng,
   canDeleteAfterClipboardWrite,
   createCodeClipboardExtension,
   getCodeClipboardOptions,
+  requestClipboardPngFallback,
   writeClipboardPayload,
 } from "../clipboard";
 
@@ -1549,7 +1549,7 @@ export class CodeBlockView implements NodeView {
     if (this.mermaidDisplayMode !== "code") {
       const renderedSvg = this.mermaidPreview.querySelector("svg");
       if (renderedSvg && !renderedSvg.hasAttribute("data-clipboard-png")) {
-        void cacheClipboardPng(renderedSvg);
+        requestClipboardPngFallback(renderedSvg);
       }
     }
   }
@@ -1587,7 +1587,7 @@ export class CodeBlockView implements NodeView {
         // 根据实际背景色修正文本颜色
         fixMermaidTextContrast(preview);
         const renderedSvg = preview.querySelector("svg");
-        if (renderedSvg) void cacheClipboardPng(renderedSvg);
+        if (renderedSvg) requestClipboardPngFallback(renderedSvg);
       } catch (error) {
         // mermaid.render() 语法错误时会在 removeTempElements() 之前抛出异常，
         // 导致临时 DOM 元素（<div id="d..."> / <svg> / <iframe>）遗留在 document.body 中。

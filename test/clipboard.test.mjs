@@ -4,13 +4,18 @@ import { Window } from "happy-dom";
 import {
   buildClipboardPayload,
   buildCodeClipboardPayload,
+  buildSelfContainedMarkup,
+  cacheClipboardPng,
   canDeleteAfterClipboardWrite,
   getClipboardFontFamilies,
   getCodeClipboardSelection,
   getRenderedNodeRoot,
   hasRenderedClipboardNode,
   getRenderedSelectionRoot,
+  isClipboardElementVisible,
+  refreshClipboardFallbacks,
   semanticizeClipboardDom,
+  resolveClipboardImageSource,
   writeClipboardEvent,
   writeClipboardPayload,
 } from "../src/core/clipboard.ts";
@@ -129,6 +134,36 @@ test("buildClipboardPayload prefers a cached local image data URL", () => {
   assert.match(payload.html, /src="data:image\/png;base64,cached"/);
 });
 
+test("resolveClipboardImageSource makes the three image modes explicit", () => {
+  const local = makeRoot(
+    '<img src="local.png" data-clipboard-src="data:image/png;base64,local">'
+  ).querySelector("img");
+  const remote = makeRoot(
+    '<img src="https://example.com/image.png" data-clipboard-src="data:image/png;base64,remote">'
+  ).querySelector("img");
+  const base64 = makeRoot('<img src="local.png">').querySelector("img");
+  const base64Cached = makeRoot(
+    '<img src="local.png" data-clipboard-src="data:image/png;base64,base64">'
+  ).querySelector("img");
+
+  assert.equal(resolveClipboardImageSource(local, "local"), "data:image/png;base64,local");
+  assert.equal(resolveClipboardImageSource(remote, "remote"), "https://example.com/image.png");
+  assert.equal(resolveClipboardImageSource(base64, "base64"), "local.png");
+  assert.equal(resolveClipboardImageSource(base64Cached, "base64"), "data:image/png;base64,base64");
+  assert.equal(local.getAttribute("data-clipboard-src"), "data:image/png;base64,local");
+  assert.equal(remote.getAttribute("data-clipboard-src"), "data:image/png;base64,remote");
+
+  const payload = buildClipboardPayload(
+    "![图](remote.png)",
+    makeRoot(
+      '<img src="https://example.com/image.png" data-clipboard-src="data:image/png;base64,remote">'
+    ),
+    { imageMode: "remote" }
+  );
+  const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+  assert.equal(parsed.querySelector("img")?.getAttribute("src"), "https://example.com/image.png");
+});
+
 test("getRenderedSelectionRoot clones visible DOM and drops editor controls", () => {
   const editorDom = makeRoot(
     '<div class="milkup-code-block"><div class="milkup-code-block-header">JavaScript</div>' +
@@ -184,6 +219,54 @@ test("getRenderedSelectionRoot drops prose layout but keeps table dimensions", (
   assert.equal(paragraph?.style.fontSize, "18px");
   assert.equal(table?.style.width, "640px");
   editorDom.remove();
+});
+
+test("getRenderedSelectionRoot removes hidden source widgets", () => {
+  const editorDom = makeRoot(
+    '<div class="math-block"><div class="math-preview">visible</div>' +
+      '<div class="math-source-container" style="display: none">secret source</div></div>'
+  );
+  document.body.appendChild(editorDom);
+  const range = document.createRange();
+  range.selectNodeContents(editorDom);
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  const result = getRenderedSelectionRoot({ dom: editorDom });
+  assert.equal(result?.textContent?.includes("visible"), true);
+  assert.equal(result?.textContent?.includes("secret source"), false);
+  assert.equal(result?.querySelector(".math-source-container"), null);
+  editorDom.remove();
+});
+
+test("refreshClipboardFallbacks skips hidden targets and retries after visibility returns", async () => {
+  const root = makeRoot('<div class="math-preview">formula</div>');
+  document.body.appendChild(root);
+  const calls = [];
+  const rasterize = async (element) => {
+    calls.push(element);
+    return null;
+  };
+
+  try {
+    assert.equal(isClipboardElementVisible(root.firstElementChild), true);
+    refreshClipboardFallbacks(root, rasterize);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.length, 1);
+
+    root.style.display = "none";
+    refreshClipboardFallbacks(root, rasterize);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.length, 1);
+
+    root.style.display = "";
+    refreshClipboardFallbacks(root, rasterize);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.length, 2);
+  } finally {
+    root.remove();
+  }
 });
 
 test("getRenderedSelectionRoot keeps prose-to-code selections in one rich fragment", () => {
@@ -318,18 +401,63 @@ test("getRenderedNodeRoot keeps the visible image element", () => {
   assert.equal(result?.querySelector("img")?.getAttribute("src"), "image.png");
 });
 
-test("buildClipboardPayload uses cached PNG as an SVG fallback", () => {
+test("buildClipboardPayload keeps an SVG primary and one PNG fallback", () => {
   const root = makeRoot(
     '<svg data-clipboard-png="data:image/png;base64,fallback"><path></path></svg>'
   );
   const payload = buildClipboardPayload("![图表](chart.svg)", root);
   const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+  const source = parsed.querySelector("picture source");
+  const image = parsed.querySelector("picture img");
 
-  assert.equal(parsed.querySelector("picture source")?.getAttribute("type"), "image/svg+xml");
-  assert.equal(
-    parsed.querySelector("picture img")?.getAttribute("src"),
-    "data:image/png;base64,fallback"
+  assert.equal(source?.getAttribute("type"), "image/svg+xml");
+  assert.equal(image?.getAttribute("src"), "data:image/png;base64,fallback");
+  assert.equal(source?.getAttribute("srcset")?.includes("data-clipboard-png"), false);
+  assert.equal((payload.html.match(/data:image\/png;base64,fallback/g) || []).length, 1);
+});
+
+test("buildClipboardPayload keeps KaTeX HTML and a single PNG fallback", () => {
+  const root = makeRoot(
+    '<div class="math-preview" data-clipboard-png="data:image/png;base64,math"><span class="katex">x</span></div>'
   );
+  const payload = buildClipboardPayload("$$x$$", root);
+  const parsed = new window.DOMParser().parseFromString(payload.html, "text/html");
+
+  assert.equal(parsed.querySelector(".math-preview .katex")?.textContent, "x");
+  assert.equal(
+    parsed.querySelector("img[data-clipboard-fallback-image]")?.getAttribute("src"),
+    "data:image/png;base64,math"
+  );
+  assert.equal((payload.html.match(/data:image\/png;base64,math/g) || []).length, 1);
+});
+
+test("self-contained raster markup includes runtime styles without mutating the source", () => {
+  const fontStyle = document.createElement("style");
+  fontStyle.textContent =
+    "@font-face { font-family: RuntimeClipboardFont; src: url(runtime.woff2); }";
+  document.head.appendChild(fontStyle);
+  const element = makeRoot('<svg style="color: red"><path></path></svg>').firstElementChild;
+
+  try {
+    const result = buildSelfContainedMarkup(element);
+    assert.equal(result.isSvg, true);
+    assert.match(result.markup, /color: red/);
+    assert.match(result.markup, /@font-face/);
+    assert.equal(element.getAttribute("data-clipboard-png"), null);
+  } finally {
+    fontStyle.remove();
+  }
+});
+
+test("cacheClipboardPng leaves the primary usable when rasterization fails", async () => {
+  const element = makeRoot(
+    '<div class="math-preview" data-clipboard-png="old"><span class="katex">x</span></div>'
+  ).firstElementChild;
+  const result = await cacheClipboardPng(element);
+
+  assert.equal(result, null);
+  assert.equal(element.querySelector(".katex")?.textContent, "x");
+  assert.equal(element.getAttribute("data-clipboard-png"), null);
 });
 
 test("buildClipboardPayload keeps plain text only in source view", () => {

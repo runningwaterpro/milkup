@@ -4,9 +4,11 @@ import type { Extension } from "@codemirror/state";
 import type { Fragment } from "prosemirror-model";
 import type { EditorView as ProseMirrorView } from "prosemirror-view";
 import { decodeHtmlEntity, HTML_ENTITY_SYNTAX_TYPE } from "./utils/html-entities.ts";
+import { resolveImageSrc } from "./utils/image-path.ts";
 import type { ImagePasteMethod } from "./plugins/paste";
 
 const CELL_BORDER = "1px solid #cccccc";
+const CLIPBOARD_TREEWALKER_SHOW_TEXT = typeof NodeFilter === "undefined" ? 4 : NodeFilter.SHOW_TEXT;
 
 export const RENDERED_CLIPBOARD_NODE_TYPES = new Set([
   "table",
@@ -101,6 +103,31 @@ export function getCodeClipboardOptions(view: CodeMirrorView): CodeClipboardOpti
   return options;
 }
 
+export function isClipboardElementHidden(element: Element): boolean {
+  let current: Element | null = element;
+  while (current) {
+    if (current.hasAttribute("hidden") || current.getAttribute("aria-hidden") === "true")
+      return true;
+    const inlineStyle = (current as HTMLElement).style;
+    if (inlineStyle.display === "none" || inlineStyle.visibility === "hidden") return true;
+
+    if (typeof getComputedStyle === "function") {
+      try {
+        const computed = getComputedStyle(current);
+        if (computed.display === "none" || computed.visibility === "hidden") return true;
+      } catch {
+        // Inline visibility is still usable when computed styles are unavailable.
+      }
+    }
+    current = current.parentElement;
+  }
+  return false;
+}
+
+export function isClipboardElementVisible(element: Element): boolean {
+  return !isClipboardElementHidden(element);
+}
+
 export function getRenderedSelectionRoot(
   view: ProseMirrorView,
   imageMode?: ImagePasteMethod
@@ -190,30 +217,56 @@ function cloneWithInlineStyles(source: HTMLElement, imageMode?: ImagePasteMethod
   return clone;
 }
 
+function getClipboardImageSource(image: HTMLImageElement): string {
+  return image.currentSrc || image.src || image.getAttribute("src") || "";
+}
+
+function isRemoteClipboardImageSource(src: string): boolean {
+  return /^(?:https?:|data:)/i.test(src);
+}
+
+function resolveLocalClipboardImageSource(src: string): string {
+  try {
+    return resolveImageSrc(src) || src;
+  } catch {
+    return src;
+  }
+}
+
+/**
+ * Resolve an image for the clipboard without changing the document source.
+ * `local` may use a cached local Data URL, `base64` always tries to produce
+ * one, and `remote` never replaces a remote URL with embedded image data.
+ */
+export function resolveClipboardImageSource(
+  image: HTMLImageElement,
+  mode: ImagePasteMethod
+): string | null {
+  const source = getClipboardImageSource(image);
+  if (!source) return null;
+
+  const cached = image.getAttribute("data-clipboard-src");
+  switch (mode) {
+    case "remote":
+      return isRemoteClipboardImageSource(source)
+        ? source
+        : resolveLocalClipboardImageSource(source);
+    case "local":
+      return cached || resolveLocalClipboardImageSource(source);
+    case "base64":
+      return cached || getLoadedImageDataUrl(image) || resolveLocalClipboardImageSource(source);
+  }
+}
+
 function copyClipboardImageSource(
   source: Element,
   target: Element,
   imageMode?: ImagePasteMethod
 ): void {
   if (!imageMode || source.tagName.toLowerCase() !== "img") return;
-  const cached = source.getAttribute("data-clipboard-src");
-  if (cached) {
-    target.setAttribute("src", cached);
-    target.removeAttribute("data-clipboard-src");
-    return;
-  }
-
-  const image = source as HTMLImageElement;
-  const src = image.currentSrc || image.getAttribute("src") || "";
-  if (!src || src.startsWith("data:")) return;
-  if (imageMode === "remote" && /^(?:https?:|data:)/i.test(src)) {
-    if (image.currentSrc) target.setAttribute("src", image.currentSrc);
-    return;
-  }
-
-  const dataUrl = getLoadedImageDataUrl(image);
-  if (dataUrl) target.setAttribute("src", dataUrl);
-  else if (image.currentSrc) target.setAttribute("src", image.currentSrc);
+  const resolved = resolveClipboardImageSource(source as HTMLImageElement, imageMode);
+  if (resolved) target.setAttribute("src", resolved);
+  target.removeAttribute("data-clipboard-src");
 }
 
 // Text must reflow in the target; only bounded objects keep layout dimensions.
@@ -258,6 +311,7 @@ function shouldPreserveClipboardLayout(source: Element): boolean {
 }
 
 function copyComputedStyles(source: Element, target: Element, imageMode?: ImagePasteMethod): void {
+  if (isClipboardElementHidden(source)) target.setAttribute("data-clipboard-hidden", "true");
   copyClipboardImageSource(source, target, imageMode);
   const preserveLayout = shouldPreserveClipboardLayout(source);
   if (!preserveLayout) {
@@ -321,11 +375,18 @@ function cleanRenderedClipboardDom(root: HTMLElement): void {
       element.remove();
       continue;
     }
-    if (element.style.display === "none" || element.style.visibility === "hidden") {
+    if (
+      element.hasAttribute("data-clipboard-hidden") ||
+      element.hasAttribute("hidden") ||
+      element.getAttribute("aria-hidden") === "true" ||
+      element.style.display === "none" ||
+      element.style.visibility === "hidden"
+    ) {
       element.remove();
       continue;
     }
     element.removeAttribute("contenteditable");
+    element.removeAttribute("data-clipboard-pending");
   }
 
   for (const checkbox of Array.from(root.querySelectorAll<HTMLElement>(".milkup-task-checkbox"))) {
@@ -412,7 +473,9 @@ export function semanticizeClipboardDom(
     if (syntaxType === HTML_ENTITY_SYNTAX_TYPE) {
       const decoded = decodeHtmlEntity(marker.textContent ?? "") ?? marker.textContent ?? "";
       const children = Array.from(marker.childNodes);
-      const firstText = document.createTreeWalker(marker, 4).nextNode();
+      const firstText = document
+        .createTreeWalker(marker, CLIPBOARD_TREEWALKER_SHOW_TEXT)
+        .nextNode();
       if (firstText) firstText.textContent = decoded;
       marker.replaceWith(...(children.length > 0 ? children : [document.createTextNode(decoded)]));
     } else {
@@ -422,7 +485,7 @@ export function semanticizeClipboardDom(
   }
 
   for (const heading of headingsWithMarker) {
-    const walker = document.createTreeWalker(heading, 4);
+    const walker = document.createTreeWalker(heading, CLIPBOARD_TREEWALKER_SHOW_TEXT);
     const firstText = walker.nextNode();
     if (firstText?.textContent?.startsWith(" ")) {
       firstText.textContent = firstText.textContent.slice(1);
@@ -718,19 +781,9 @@ function applyClipboardImages(root: HTMLElement, mode: ImagePasteMethod | undefi
   if (!mode) return;
 
   for (const image of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) {
-    const cached = image.getAttribute("data-clipboard-src");
-    if (cached) {
-      image.setAttribute("src", cached);
-      image.removeAttribute("data-clipboard-src");
-      continue;
-    }
-
-    const src = image.getAttribute("src") || "";
-    if (!src || src.startsWith("data:")) continue;
-    if (mode === "remote" && /^(?:https?:|data:)/i.test(src)) continue;
-
-    const dataUrl = getLoadedImageDataUrl(image);
-    if (dataUrl) image.setAttribute("src", dataUrl);
+    const resolved = resolveClipboardImageSource(image, mode);
+    if (resolved) image.setAttribute("src", resolved);
+    image.removeAttribute("data-clipboard-src");
   }
 }
 
@@ -784,6 +837,128 @@ export async function cacheClipboardPng(element: Element): Promise<string | null
   return dataUrl;
 }
 
+export type ClipboardFallbackRasterizer = (element: Element) => Promise<string | null>;
+
+export function requestClipboardPngFallback(
+  element: Element,
+  rasterize: ClipboardFallbackRasterizer = cacheClipboardPng
+): void {
+  if (
+    !isClipboardElementVisible(element) ||
+    element.hasAttribute("data-clipboard-png") ||
+    element.hasAttribute("data-clipboard-pending")
+  ) {
+    return;
+  }
+  element.setAttribute("data-clipboard-pending", "true");
+  void Promise.resolve()
+    .then(() => rasterize(element))
+    .catch(() => null)
+    .finally(() => element.removeAttribute("data-clipboard-pending"));
+}
+
+export function refreshClipboardFallbacks(
+  root: ParentNode,
+  rasterize: ClipboardFallbackRasterizer = cacheClipboardPng
+): void {
+  const targets = root.querySelectorAll<HTMLElement>(".math-preview, .milkup-mermaid-preview svg");
+  for (const target of Array.from(targets)) {
+    requestClipboardPngFallback(target, rasterize);
+  }
+}
+
+function inlineRuntimeStylesForRaster(source: Element, target: Element): void {
+  if (typeof getComputedStyle !== "function") return;
+
+  try {
+    const computed = getComputedStyle(source);
+    for (let index = 0; index < computed.length; index += 1) {
+      const property = computed.item(index);
+      const value = computed.getPropertyValue(property);
+      if (value) (target as HTMLElement).style.setProperty(property, value);
+    }
+  } catch {
+    // A best-effort inline style is still useful when computed styles are partial.
+  }
+
+  const sourceChildren = Array.from(source.children);
+  const targetChildren = Array.from(target.children);
+  for (let index = 0; index < sourceChildren.length; index += 1) {
+    inlineRuntimeStylesForRaster(sourceChildren[index], targetChildren[index]);
+  }
+}
+
+function absolutizeFontFaceCssUrls(css: string, baseUri: string): string {
+  return css.replace(/url\((['"]?)([^)'"\s]+)\1\)/gi, (match, quote, value) => {
+    if (/^(?:data:|blob:|https?:|file:)/i.test(value)) return match;
+    try {
+      return `url(${quote}${new URL(value, baseUri).href}${quote})`;
+    } catch {
+      return match;
+    }
+  });
+}
+
+function getRuntimeFontFaceCss(document: Document): string {
+  const rules: string[] = [];
+  const sheets = document.styleSheets;
+
+  if (sheets) {
+    for (let sheetIndex = 0; sheetIndex < sheets.length; sheetIndex += 1) {
+      try {
+        const sheet = sheets.item(sheetIndex);
+        if (!sheet) continue;
+        let sheetRules = 0;
+        for (const rule of Array.from(sheet.cssRules)) {
+          const cssText = rule.cssText || "";
+          if (/^@font-face\b/i.test(cssText.trim())) {
+            rules.push(absolutizeFontFaceCssUrls(cssText, document.baseURI));
+            sheetRules += 1;
+          }
+        }
+        if (sheetRules === 0) {
+          const styleText = sheet.ownerNode?.textContent || "";
+          rules.push(
+            ...(styleText.match(/@font-face\s*\{[\s\S]*?\}/gi) || []).map((rule) =>
+              absolutizeFontFaceCssUrls(rule, document.baseURI)
+            )
+          );
+        }
+      } catch {
+        // Cross-origin stylesheets are intentionally left to the browser fallback.
+      }
+    }
+  }
+  if (rules.length === 0) {
+    for (const style of Array.from(document.querySelectorAll("style"))) {
+      rules.push(
+        ...(style.textContent?.match(/@font-face\s*\{[\s\S]*?\}/gi) || []).map((rule) =>
+          absolutizeFontFaceCssUrls(rule, document.baseURI)
+        )
+      );
+    }
+  }
+  return rules.join("\n");
+}
+
+export function buildSelfContainedMarkup(element: Element): { markup: string; isSvg: boolean } {
+  const isSvg = element.tagName.toLowerCase() === "svg";
+  const clone = element.cloneNode(true) as Element;
+  inlineRuntimeStylesForRaster(element, clone);
+  removeClipboardPngAttributes(clone);
+
+  const fontFaceCss = getRuntimeFontFaceCss(element.ownerDocument);
+  if (fontFaceCss) {
+    const style = isSvg
+      ? element.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "style")
+      : element.ownerDocument.createElement("style");
+    style.textContent = fontFaceCss;
+    clone.insertBefore(style, clone.firstChild);
+  }
+
+  return { markup: clone.outerHTML, isSvg };
+}
+
 async function rasterizeElement(element: Element): Promise<string | null> {
   if (
     typeof Image === "undefined" ||
@@ -799,8 +974,8 @@ async function rasterizeElement(element: Element): Promise<string | null> {
     const height = Math.ceil(element.getBoundingClientRect?.().height || 0);
     if (width <= 0 || height <= 0) return null;
 
-    const markup = element.outerHTML;
-    const isSvg = element.tagName.toLowerCase() === "svg";
+    const originalMarkup = element.outerHTML;
+    const { markup, isSvg } = buildSelfContainedMarkup(element);
     const svgMarkup =
       isSvg && !/\sxmlns=/.test(markup)
         ? markup.replace(/^<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"')
@@ -825,7 +1000,7 @@ async function rasterizeElement(element: Element): Promise<string | null> {
     const context = canvas.getContext("2d");
     if (!context) return null;
     context.drawImage(image, 0, 0, width, height);
-    if (element.outerHTML !== markup) return null;
+    if (element.outerHTML !== originalMarkup) return null;
     return canvas.toDataURL("image/png");
   } catch {
     return null;
@@ -834,8 +1009,18 @@ async function rasterizeElement(element: Element): Promise<string | null> {
   }
 }
 
+function removeClipboardPngAttributes(element: Element): void {
+  for (const node of [element, ...Array.from(element.querySelectorAll("*"))]) {
+    node.removeAttribute("data-clipboard-png");
+  }
+}
+
 function applyClipboardPngFallback(root: HTMLElement): void {
-  for (const element of Array.from(root.querySelectorAll<HTMLElement>("[data-clipboard-png]"))) {
+  const elements: Element[] = [];
+  if (root.hasAttribute("data-clipboard-png")) elements.push(root);
+  elements.push(...Array.from(root.querySelectorAll("[data-clipboard-png]")));
+
+  for (const element of elements) {
     const png = element.getAttribute("data-clipboard-png");
     if (!png) continue;
 
@@ -843,19 +1028,31 @@ function applyClipboardPngFallback(root: HTMLElement): void {
     const image = document.createElement("img");
     image.src = png;
     image.alt = element.getAttribute("aria-label") || element.getAttribute("alt") || "";
-    image.className = element.getAttribute("class") || "";
     image.style.cssText = element.getAttribute("style") || "";
+    image.className = "milkup-clipboard-png-fallback";
+    image.setAttribute("data-clipboard-fallback-image", "true");
+    image.setAttribute("aria-hidden", "true");
 
     if (element.tagName.toLowerCase() === "svg") {
       const picture = document.createElement("picture");
       const source = document.createElement("source");
+      const primary = element.cloneNode(true) as Element;
+      removeClipboardPngAttributes(primary);
       source.type = "image/svg+xml";
-      source.srcset = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(element.outerHTML)}`;
+      source.srcset = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(primary.outerHTML)}`;
       picture.append(source, image);
       element.replaceWith(picture);
-    } else {
-      element.replaceWith(image);
+      continue;
     }
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "milkup-clipboard-fallback";
+    wrapper.setAttribute("data-clipboard-fallback", "png");
+    const primary = element.cloneNode(true) as Element;
+    removeClipboardPngAttributes(primary);
+    image.style.display = "none";
+    wrapper.append(primary, image);
+    element.replaceWith(wrapper);
   }
 }
 

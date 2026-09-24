@@ -10,7 +10,7 @@ import { Selection, TextSelection } from "prosemirror-state";
 import { EditorView, NodeView } from "prosemirror-view";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import { cacheClipboardPng } from "../clipboard";
+import { requestClipboardPngFallback } from "../clipboard";
 
 function renderMath(content: string, displayMode: boolean): string {
   if (!content.trim()) {
@@ -110,7 +110,7 @@ export class MathBlockView implements NodeView {
     if (typeof requestAnimationFrame === "function") {
       requestAnimationFrame(() => {
         if (!this.isEditing && !this.preview.hasAttribute("data-clipboard-png")) {
-          void cacheClipboardPng(this.preview);
+          requestClipboardPngFallback(this.preview);
         }
       });
     }
@@ -137,7 +137,7 @@ export class MathBlockView implements NodeView {
     const html = renderMath(content, true);
     this.preview.removeAttribute("data-clipboard-png");
     this.preview.innerHTML = html || '<span class="math-placeholder">输入数学公式...</span>';
-    if (html && !this.isEditing) void cacheClipboardPng(this.preview);
+    if (html && !this.isEditing) requestClipboardPngFallback(this.preview);
   }
 
   private setEditing(editing: boolean): void {
@@ -145,7 +145,7 @@ export class MathBlockView implements NodeView {
     this.isEditing = editing;
     this.dom.classList.toggle("editing", editing);
     if (!editing && this.preview.innerHTML && !this.preview.hasAttribute("data-clipboard-png")) {
-      void cacheClipboardPng(this.preview);
+      requestClipboardPngFallback(this.preview);
     }
   }
 

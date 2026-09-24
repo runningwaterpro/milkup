@@ -24,6 +24,7 @@ import {
   getRenderedNodeRoot,
   getRenderedSelectionRoot,
   hasRenderedClipboardNode,
+  refreshClipboardFallbacks,
   writeClipboardEvent,
   writeClipboardPayload,
   type ClipboardPayload,
@@ -430,6 +431,11 @@ export class MilkupEditor implements IMilkupEditor {
     this.view.focus();
   }
 
+  /** Retry async PNG fallbacks after a previously hidden editor becomes visible. */
+  refreshClipboardFallbacks(): void {
+    refreshClipboardFallbacks(this.view.dom);
+  }
+
   /**
    * 处理编辑器点击事件
    * 用于处理点击空白区域时的聚焦
@@ -809,7 +815,12 @@ export class MilkupEditor implements IMilkupEditor {
 
   /** 复制时保留当前表格选区的纯文本规则，并同时写入富文本。 */
   private handleCopy(view: EditorView, event: ClipboardEvent): boolean {
-    if (this.isClipboardEventFromCodeBlock(view, event) || view.state.selection.empty) return false;
+    if (
+      this.isClipboardEventFromCodeBlock(view, event) ||
+      this.isClipboardEventFromHtmlBlockEditor(view, event) ||
+      view.state.selection.empty
+    )
+      return false;
 
     const plain = this.serializeSelectionForClipboard();
     return this.writeNativeClipboard(view, event, plain, false);
@@ -819,6 +830,7 @@ export class MilkupEditor implements IMilkupEditor {
   private handleCut(view: EditorView, event: ClipboardEvent): boolean {
     if (
       this.isClipboardEventFromCodeBlock(view, event) ||
+      this.isClipboardEventFromHtmlBlockEditor(view, event) ||
       !view.editable ||
       view.state.selection.empty
     ) {
@@ -849,43 +861,65 @@ export class MilkupEditor implements IMilkupEditor {
     return true;
   }
 
-  private isClipboardEventFromCodeBlock(view: EditorView, event: ClipboardEvent): boolean {
-    const target = event.target as Element | null;
-    if (!target?.closest?.(".milkup-code-block")) return false;
-
+  private isSelectionInsideNodeType(view: EditorView, typeName: string): boolean {
     const { from, to } = view.state.selection;
-    let selectionInsideCodeBlock = false;
+    let selectionInsideNode = false;
     view.state.doc.nodesBetween(from, to, (node, pos) => {
-      if (node.type.name === "code_block" && from >= pos && to <= pos + node.nodeSize) {
-        selectionInsideCodeBlock = true;
+      if (node.type.name === typeName && from >= pos && to <= pos + node.nodeSize) {
+        selectionInsideNode = true;
         return false;
       }
-      return !selectionInsideCodeBlock;
+      return !selectionInsideNode;
     });
-    return selectionInsideCodeBlock;
+    return selectionInsideNode;
+  }
+
+  private isClipboardEventFromCodeBlock(view: EditorView, event: ClipboardEvent): boolean {
+    const target = event.target as Element | null;
+    return (
+      !!target?.closest?.(".milkup-code-block") &&
+      this.isSelectionInsideNodeType(view, "code_block")
+    );
+  }
+
+  private isClipboardEventFromHtmlBlockEditor(view: EditorView, event: ClipboardEvent): boolean {
+    const target = event.target as Element | null;
+    return (
+      !!target?.closest?.(".milkup-html-block-editor") &&
+      this.isSelectionInsideNodeType(view, "html_block")
+    );
   }
 
   private getClipboardImageMode(): ImagePasteMethod {
     return this.config.pasteConfig?.getImagePasteMethod?.() ?? getImagePasteMethod();
   }
 
+  private buildClipboardPayloadForDom(
+    dom: HTMLElement,
+    plain: string,
+    sourceView: boolean,
+    imageMode?: ImagePasteMethod
+  ): ClipboardPayload {
+    return buildClipboardPayload(plain, dom, {
+      sourceView,
+      imageMode: imageMode ?? (sourceView ? undefined : this.getClipboardImageMode()),
+      ...getClipboardFontFamilies(
+        this.view.dom,
+        this.view.dom.querySelector<HTMLElement>(".cm-content") ?? undefined
+      ),
+    });
+  }
+
   private createRichClipboardPayload(view: EditorView, plain: string): ClipboardPayload {
     const sourceView = this.isSourceViewEnabled();
+    const imageMode = sourceView ? undefined : this.getClipboardImageMode();
     try {
-      const imageMode = sourceView ? undefined : this.getClipboardImageMode();
       const renderedRoot =
         sourceView || !shouldUseRenderedClipboardDom(view)
           ? null
           : getRenderedSelectionRoot(view, imageMode);
       const dom = renderedRoot ?? view.serializeForClipboard(view.state.selection.content()).dom;
-      return buildClipboardPayload(plain, dom, {
-        sourceView,
-        imageMode,
-        ...getClipboardFontFamilies(
-          view.dom,
-          view.dom.querySelector<HTMLElement>(".cm-content") ?? undefined
-        ),
-      });
+      return this.buildClipboardPayloadForDom(dom, plain, sourceView, imageMode);
     } catch (error) {
       console.error("生成富文本剪贴板失败", error);
       return { plain, html: "", richRequired: !sourceView };
@@ -905,14 +939,7 @@ export class MilkupEditor implements IMilkupEditor {
         ? null
         : getRenderedNodeRoot(this.view, tableInfo.pos, imageMode);
       const dom = renderedRoot ?? this.view.serializeForClipboard(new Slice(doc.content, 0, 0)).dom;
-      return buildClipboardPayload(plain, dom, {
-        sourceView,
-        imageMode,
-        ...getClipboardFontFamilies(
-          this.view.dom,
-          this.view.dom.querySelector<HTMLElement>(".cm-content") ?? undefined
-        ),
-      });
+      return this.buildClipboardPayloadForDom(dom, plain, sourceView, imageMode);
     } catch (error) {
       console.error("生成表格剪贴板失败", error);
       return { plain, html: "", richRequired: true };
@@ -1113,14 +1140,9 @@ export class MilkupEditor implements IMilkupEditor {
         const plain = this.serializeSelectionForClipboard();
         const payload = this.createRichClipboardPayload(this.view, plain);
         const result = await writeClipboardPayload(payload);
-        const canDelete =
-          this.view.editable && canDeleteAfterClipboardWrite(payload, result);
+        const canDelete = this.view.editable && canDeleteAfterClipboardWrite(payload, result);
         const selection = this.view.state.selection;
-        if (
-          canDelete &&
-          this.view.state.doc === state.doc &&
-          selection.eq(state.selection)
-        ) {
+        if (canDelete && this.view.state.doc === state.doc && selection.eq(state.selection)) {
           this.view.dispatch(
             this.view.state.tr.deleteSelection().scrollIntoView().setMeta("uiEvent", "cut")
           );
