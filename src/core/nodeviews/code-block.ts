@@ -48,6 +48,13 @@ import { perl } from "@codemirror/legacy-modes/mode/perl";
 import { powerShell } from "@codemirror/legacy-modes/mode/powershell";
 import { sourceViewManager } from "../decorations";
 import { searchPluginKey } from "../plugins/search";
+import {
+  buildCodeClipboardPayload,
+  cacheClipboardPng,
+  createCodeClipboardExtension,
+  getCodeClipboardOptions,
+  writeClipboardPayload,
+} from "../clipboard";
 
 /** Mermaid 显示模式 */
 type MermaidDisplayMode = "code" | "mixed" | "diagram";
@@ -540,11 +547,18 @@ export class CodeBlockView implements NodeView {
   // 源码模式相关
   private sourceViewMode: boolean = false;
   private sourceViewUnsubscribe: (() => void) | null = null;
+  private readonly isReadOnly: () => boolean;
 
-  constructor(node: ProseMirrorNode, view: ProseMirrorView, getPos: () => number | undefined) {
+  constructor(
+    node: ProseMirrorNode,
+    view: ProseMirrorView,
+    getPos: () => number | undefined,
+    isReadOnly: () => boolean = () => false
+  ) {
     this.node = node;
     this.view = view;
     this.getPos = getPos;
+    this.isReadOnly = isReadOnly;
     this.languageCompartment = new Compartment();
     this.themeCompartment = new Compartment();
     this.lineNumbersCompartment = new Compartment();
@@ -703,6 +717,7 @@ export class CodeBlockView implements NodeView {
           this.languageCompartment.of(getLanguageExtension(normalizedLang)),
           this.lineNumbersCompartment.of(lineNumbers()),
           this.searchHighlightCompartment.of([]),
+          createCodeClipboardExtension(() => this.isReadOnly()),
           EditorView.updateListener.of((update) => this.onCMUpdate(update)),
           EditorView.domEventHandlers({
             focus: () => this.forwardSelection(),
@@ -807,6 +822,12 @@ export class CodeBlockView implements NodeView {
           e.preventDefault();
           const text = e.clipboardData?.getData("text/plain") || "";
           document.execCommand("insertText", false, text);
+        });
+        this.sourceTextElement.addEventListener("copy", (e) => {
+          this.handleSourceClipboard(e as ClipboardEvent, false);
+        });
+        this.sourceTextElement.addEventListener("cut", (e) => {
+          this.handleSourceClipboard(e as ClipboardEvent, true);
         });
 
         this.dom.insertBefore(this.sourceTextElement, this.editorContainer);
@@ -1029,6 +1050,34 @@ export class CodeBlockView implements NodeView {
     }
   }
 
+  private handleSourceClipboard(event: ClipboardEvent, cut: boolean): void {
+    const element = this.sourceTextElement;
+    const selection = window.getSelection();
+    if (!element || !selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+    if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return;
+
+    const data = event.clipboardData;
+    if (!data) {
+      if (cut) event.preventDefault();
+      return;
+    }
+
+    try {
+      data.clearData();
+      data.setData("text/plain", selection.toString());
+      event.preventDefault();
+    } catch {
+      if (cut) event.preventDefault();
+      return;
+    }
+
+    if (cut && !this.isReadOnly()) {
+      document.execCommand("delete");
+    }
+  }
+
   /**
    * 创建头部（语言选择器和 Mermaid 模式选择器）
    */
@@ -1062,14 +1111,16 @@ export class CodeBlockView implements NodeView {
     copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
     copyBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.copyCodeBlock();
-      // 短暂显示已复制反馈
-      copyBtn.classList.add("copied");
-      copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
-      setTimeout(() => {
-        copyBtn.classList.remove("copied");
-        copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
-      }, 1500);
+      void this.copyCodeBlock().then((copied) => {
+        if (!copied) return;
+        // 短暂显示已复制反馈
+        copyBtn.classList.add("copied");
+        copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+        setTimeout(() => {
+          copyBtn.classList.remove("copied");
+          copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+        }, 1500);
+      });
     });
     header.appendChild(copyBtn);
 
@@ -1155,8 +1206,12 @@ export class CodeBlockView implements NodeView {
   /**
    * 复制代码块到剪贴板
    */
-  private copyCodeBlock(): void {
-    navigator.clipboard.writeText(this.cm.state.doc.toString());
+  private createCodeClipboardPayload(text: string) {
+    return buildCodeClipboardPayload(text, getCodeClipboardOptions(this.cm));
+  }
+
+  private copyCodeBlock(): Promise<boolean> {
+    return writeClipboardPayload(this.createCodeClipboardPayload(this.cm.state.doc.toString()));
   }
 
   /**
@@ -1193,22 +1248,38 @@ export class CodeBlockView implements NodeView {
     }
 
     // 复制
-    const copyItem = this.createContextMenuItem("复制", !hasSelection, () => {
+    const copyItem = this.createContextMenuItem("复制", !hasSelection, async () => {
       const selectedText = this.cm.state.sliceDoc(main.from, main.to);
-      navigator.clipboard.writeText(selectedText);
+      await writeClipboardPayload(this.createCodeClipboardPayload(selectedText));
       this.hideContextMenu();
     });
     menu.appendChild(copyItem);
 
     // 剪切
-    const cutItem = this.createContextMenuItem("剪切", !hasSelection, () => {
-      const selectedText = this.cm.state.sliceDoc(main.from, main.to);
-      navigator.clipboard.writeText(selectedText);
-      this.cm.dispatch({
-        changes: { from: main.from, to: main.to, insert: "" },
-      });
-      this.hideContextMenu();
-    });
+    const cutItem = this.createContextMenuItem(
+      "剪切",
+      !hasSelection || this.isReadOnly(),
+      async () => {
+        if (this.isReadOnly()) return;
+        const state = this.cm.state;
+        const { from, to } = state.selection.main;
+        const selectedText = state.sliceDoc(from, to);
+        const written = await writeClipboardPayload(this.createCodeClipboardPayload(selectedText));
+        const current = this.cm.state.selection.main;
+        if (
+          written &&
+          this.cm.state.doc === state.doc &&
+          current.from === from &&
+          current.to === to
+        ) {
+          this.cm.dispatch({
+            changes: { from, to, insert: "" },
+            userEvent: "delete.cut",
+          });
+        }
+        this.hideContextMenu();
+      }
+    );
     menu.appendChild(cutItem);
 
     // 粘贴 - 使用 Clipboard API 读取文本
@@ -1236,7 +1307,7 @@ export class CodeBlockView implements NodeView {
 
     // 复制代码块
     const copyBlockItem = this.createContextMenuItem("复制代码块", false, () => {
-      this.copyCodeBlock();
+      void this.copyCodeBlock();
       this.hideContextMenu();
     });
     menu.appendChild(copyBlockItem);
@@ -1290,7 +1361,7 @@ export class CodeBlockView implements NodeView {
   private createContextMenuItem(
     label: string,
     disabled: boolean,
-    onClick: () => void
+    onClick: () => void | Promise<void>
   ): HTMLElement {
     const item = document.createElement("div");
     item.className = "milkup-context-menu-item";
@@ -1302,7 +1373,7 @@ export class CodeBlockView implements NodeView {
     if (!disabled) {
       item.addEventListener("click", (e) => {
         e.stopPropagation();
-        onClick();
+        void onClick();
       });
     }
 
@@ -1469,6 +1540,13 @@ export class CodeBlockView implements NodeView {
         this.mermaidPreview.style.display = "block";
         break;
     }
+
+    if (this.mermaidDisplayMode !== "code") {
+      const renderedSvg = this.mermaidPreview.querySelector("svg");
+      if (renderedSvg && !renderedSvg.hasAttribute("data-clipboard-png")) {
+        void cacheClipboardPng(renderedSvg);
+      }
+    }
   }
 
   /**
@@ -1503,6 +1581,8 @@ export class CodeBlockView implements NodeView {
         padMermaidSvgBounds(preview);
         // 根据实际背景色修正文本颜色
         fixMermaidTextContrast(preview);
+        const renderedSvg = preview.querySelector("svg");
+        if (renderedSvg) void cacheClipboardPng(renderedSvg);
       } catch (error) {
         // mermaid.render() 语法错误时会在 removeTempElements() 之前抛出异常，
         // 导致临时 DOM 元素（<div id="d..."> / <svg> / <iframe>）遗留在 document.body 中。
@@ -1835,9 +1915,12 @@ export class CodeBlockView implements NodeView {
 
   /**
    * 停止事件传播
-   * 只阻止键盘事件，允许鼠标事件传播到自定义组件
+   * 复制/剪切交给 CodeMirror 或跨块选区的 ProseMirror，其余事件留在 NodeView 内处理。
    */
   stopEvent(event: Event): boolean {
+    // 跨代码块选区需要让 ProseMirror 处理；块内事件由 CodeMirror 自己的 handler 拦截。
+    if (event.type === "copy" || event.type === "cut") return false;
+
     // 允许头部区域的鼠标事件（下拉选择器）
     if (event.target instanceof HTMLElement) {
       const isInHeader = event.target.closest(".milkup-code-block-header");
@@ -1882,7 +1965,8 @@ export class CodeBlockView implements NodeView {
 export function createCodeBlockNodeView(
   node: ProseMirrorNode,
   view: ProseMirrorView,
-  getPos: () => number | undefined
+  getPos: () => number | undefined,
+  isReadOnly: () => boolean = () => false
 ): CodeBlockView {
-  return new CodeBlockView(node, view, getPos);
+  return new CodeBlockView(node, view, getPos, isReadOnly);
 }

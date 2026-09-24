@@ -120,6 +120,7 @@
     "electron-builder": "^26.0.12",
     "esbuild": "^0.25.9",
     "genereleaselog": "^0.0.5",
+    "happy-dom": "20.14.5",
     "less": "^4.4.1",
     "oxfmt": "^0.27.0",
     "oxlint": "^1.12.0",
