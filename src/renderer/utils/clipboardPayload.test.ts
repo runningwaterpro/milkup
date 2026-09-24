@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildClipboardPayload } from './clipboardPayload'
+import { buildClipboardPayload, normalizeOlStartHtml } from './clipboardPayload'
 
 function attachParagraph(): HTMLElement {
   document.body.innerHTML = ''
@@ -90,5 +90,12 @@ describe('buildClipboardPayload', () => {
     const html = buildClipboardPayload('Dark', document.querySelector('p')!).html
     expect(html).toMatch(/color:\s*#333333|color:\s*rgb\(51/i)
     expect(html).toMatch(/background-color:\s*(?:#fff|rgb\(255)/i)
+  })
+
+  it('normalizeOlStartHtml clamps invalid start to 1', () => {
+    expect(normalizeOlStartHtml('<ol start="0"><li>a</li></ol>')).toContain('start="1"')
+    expect(normalizeOlStartHtml('<ol start=""><li>a</li></ol>')).toContain('start="1"')
+    expect(normalizeOlStartHtml('<ol><li>a</li></ol>')).toContain('start="1"')
+    expect(normalizeOlStartHtml('<ol start="3"><li>a</li></ol>')).toContain('start="3"')
   })
 })

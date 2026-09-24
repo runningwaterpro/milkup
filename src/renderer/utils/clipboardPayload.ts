@@ -1,4 +1,5 @@
 import type { EditorView } from '@milkdown/prose/view'
+import { DOMSerializer } from '@milkdown/prose/model'
 import { cloneWithInlineStyles } from './inlineStyles'
 
 export interface ClipboardPayload {
@@ -49,8 +50,8 @@ export function buildClipboardPayload(
 }
 
 /**
- * 以 ProseMirror 选区（而非 window.getSelection）收集顶层块。
- * 外部粘贴进编辑器后，DOM Selection 常与 PM 选区不一致，会导致宿主为空。
+ * 以 ProseMirror 选区收集顶层块；失败时退回 DOMSerializer（结构始终有 table/ol）。
+ * 外部粘贴后 window.getSelection 常失效，不能当唯一来源。
  */
 export function selectionStyleHost(view: EditorView): HTMLElement | null {
   const { from, to } = view.state.selection
@@ -60,7 +61,7 @@ export function selectionStyleHost(view: EditorView): HTMLElement | null {
   const startBlock = closestBlock(view.domAtPos(from).node, view.dom)
   const endBlock = closestBlock(view.domAtPos(to).node, view.dom)
   if (!startBlock || !endBlock)
-    return null
+    return pmSerializerHost(view)
 
   const blocks = Array.from(view.dom.querySelectorAll(BLOCK_SELECTOR)) as HTMLElement[]
   let i = blocks.indexOf(startBlock)
@@ -70,7 +71,7 @@ export function selectionStyleHost(view: EditorView): HTMLElement | null {
   if (j < 0)
     j = blocks.findIndex(b => b.contains(endBlock))
   if (i < 0 || j < 0)
-    return null
+    return pmSerializerHost(view)
   if (i > j)
     [i, j] = [j, i]
 
@@ -79,7 +80,34 @@ export function selectionStyleHost(view: EditorView): HTMLElement | null {
   for (let k = i; k <= j; k++)
     host.appendChild(cloneWithInlineStyles(blocks[k]))
 
+  return host.childElementCount ? host : pmSerializerHost(view)
+}
+
+/** 从 PM 文档切片序列化 HTML（与打开文件同一数据源，不依赖 DOM Selection）。 */
+export function pmSerializerHost(view: EditorView): HTMLElement | null {
+  const { from, to } = view.state.selection
+  if (from === to)
+    return null
+  const slice = view.state.doc.slice(from, to)
+  const host = document.createElement('div')
+  host.setAttribute('data-clipboard-host', '')
+  host.appendChild(
+    DOMSerializer.fromSchema(view.state.schema).serializeFragment(slice.content, { document }),
+  )
   return host.childElementCount ? host : null
+}
+
+/** 粘贴 HTML 时把 ol 的非法 start（0/空）收成 ≥1，避免编辑器里从 0 起编号。 */
+export function normalizeOlStartHtml(html: string): string {
+  return html.replace(/<ol\b([^>]*)>/gi, (_m, attrs: string) => {
+    const m = attrs.match(/\bstart\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i)
+    const raw = m ? (m[2] ?? m[3] ?? m[4] ?? '') : '1'
+    const n = raw.trim() === '' ? Number.NaN : Number(raw)
+    const safe = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1
+    const stripped = attrs.replace(/\bstart\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '').replace(/\s+/g, ' ').trim()
+    const rest = stripped ? ` ${stripped}` : ''
+    return `<ol${rest} start="${safe}">`
+  })
 }
 
 function closestBlock(node: Node, root: HTMLElement): HTMLElement | null {
