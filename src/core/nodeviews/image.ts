@@ -13,6 +13,7 @@ import { EditorView, NodeView } from "prosemirror-view";
 import { NodeSelection, Selection } from "prosemirror-state";
 import { sourceViewManager } from "../decorations";
 import { resolveImageSrc } from "../utils/image-path";
+import { cacheClipboardImage } from "../clipboard";
 
 // 存储所有 ImageView 实例，用于全局更新
 const imageViews = new Set<ImageView>();
@@ -417,6 +418,16 @@ export class ImageView implements NodeView {
     img.onerror = () => {
       this.showImageError(src);
     };
+    img.addEventListener(
+      "load",
+      () => {
+        const renderedSrc = img.currentSrc || img.src;
+        if (!/^https?:/i.test(src) && !/^https?:/i.test(renderedSrc)) {
+          void cacheClipboardImage(img);
+        }
+      },
+      { once: true }
+    );
 
     if (linkHref) {
       const a = document.createElement("a");

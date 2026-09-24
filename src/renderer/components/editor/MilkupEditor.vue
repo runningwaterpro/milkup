@@ -273,6 +273,9 @@ function createEditorInstance() {
   };
 
   editor = createMilkupEditor(containerRef.value, config);
+  if (props.isActive) {
+    void nextTick().then(() => editor?.refreshClipboardFallbacks());
+  }
 
   // 监听变更事件
   editor.on("change", ({ markdown }: { markdown: string }) => {
@@ -509,6 +512,7 @@ watch(
       emitOutlineUpdate();
       // 通知源码模式状态
       emitter.emit("sourceView:changed", editor?.isSourceViewEnabled() ?? false);
+      void nextTick().then(() => editor?.refreshClipboardFallbacks());
     }
   }
 );

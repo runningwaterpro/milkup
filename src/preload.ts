@@ -76,6 +76,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   ) => ipcRenderer.invoke("image:openPreview", { src, alt, ...options }),
   getFilePathInClipboard: () => ipcRenderer.invoke("clipboard:getFilePath"),
   writeTextToClipboard: (text: string) => ipcRenderer.invoke("clipboard:writeText", text),
+  writeToClipboard: (payload: { text: string; html: string }) =>
+    ipcRenderer.invoke("clipboard:write", payload),
   writeTempImage: (
     file: Uint8Array,
     targetPath: string,
