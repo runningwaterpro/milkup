@@ -17,6 +17,7 @@ import { undo, redo } from "prosemirror-history";
 import { uploadImage } from "@/renderer/services/api";
 import { AIService } from "@/renderer/services/ai";
 import { useAIConfig } from "@/renderer/hooks/useAIConfig";
+import useEditorZoom from "@/renderer/hooks/useEditorZoom";
 import { useConfig } from "@/renderer/hooks/useConfig";
 import useUiLoading from "@/renderer/hooks/useUiLoading";
 import LoadingIcon from "@/renderer/components/ui/LoadingIcon.vue";
@@ -30,6 +31,8 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+const { contentStyleFor } = useEditorZoom();
+const editorContentStyle = computed(() => contentStyleFor(props.tab));
 
 const LARGE_DOCUMENT_CHAR_THRESHOLD = 200_000;
 const LARGE_DOCUMENT_LINE_THRESHOLD = 4_000;
@@ -531,7 +534,9 @@ defineExpose({
     :data-active="isActive ? 'true' : 'false'"
   >
     <div ref="scrollViewRef" class="scrollView milkup" @scroll="updateScrollRatio">
-      <div ref="containerRef" class="milkup-container"></div>
+      <div class="editor-zoom-surface" :style="editorContentStyle">
+        <div ref="containerRef" class="milkup-container"></div>
+      </div>
     </div>
     <div v-if="isEditorInitializing" class="editor-loading-overlay">
       <div class="editor-loading-card">
@@ -555,6 +560,12 @@ defineExpose({
     height: 100%;
     overflow-y: auto;
     background: var(--background-color-1);
+  }
+
+  .editor-zoom-surface {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
   }
 
   .milkup-container {
