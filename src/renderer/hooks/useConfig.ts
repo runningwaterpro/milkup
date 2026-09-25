@@ -32,6 +32,7 @@ interface AppConfig extends Record<string, any> {
     sortBy: "name" | "mtime";
     startupPath: string;
     autoExpandSidebar: boolean;
+    sidebarWidth: number | null;
   };
 }
 
@@ -57,6 +58,7 @@ const defaultConfig: AppConfig = {
     sortBy: "name",
     startupPath: "",
     autoExpandSidebar: false,
+    sidebarWidth: null,
   },
 };
 

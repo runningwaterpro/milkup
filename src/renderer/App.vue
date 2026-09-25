@@ -6,6 +6,10 @@ import useFont from "@/renderer/hooks/useFont";
 import useOtherConfig from "@/renderer/hooks/useOtherConfig";
 import { isShowOutline, toggleShowOutline } from "@/renderer/hooks/useOutline";
 import { useSaveConfirmDialog } from "@/renderer/hooks/useSaveConfirmDialog";
+import {
+  createSidebarWidthController,
+  SIDEBAR_DEFAULT_CSS,
+} from "@/renderer/hooks/useSidebarWidth";
 import useSourceCode from "@/renderer/hooks/useSourceCode";
 import useSpellCheck from "@/renderer/hooks/useSpellCheck";
 import useTab from "@/renderer/hooks/useTab";
@@ -14,6 +18,12 @@ import useUiLoading from "@/renderer/hooks/useUiLoading";
 import { useUpdateDialog } from "@/renderer/hooks/useUpdateDialog";
 import useWorkSpace from "@/renderer/hooks/useWorkSpace";
 import { shouldAutoLoadWorkspace } from "@/renderer/utils/workspacePath";
+import {
+  getSidebarContextKey,
+  readSidebarVisibility,
+  resolveSidebarVisibility,
+  writeSidebarVisibility,
+} from "@/renderer/utils/sidebarVisibility";
 import SaveConfirmDialog from "./components/dialogs/SaveConfirmDialog.vue";
 import UpdateConfirmDialog from "./components/dialogs/UpdateConfirmDialog.vue";
 import MilkupEditor from "./components/editor/MilkupEditor.vue";
@@ -30,8 +40,8 @@ const { init: initTheme } = useTheme();
 const { isLoading, loadingMessage } = useUiLoading();
 const { init: initFont } = useFont();
 const { init: initOtherConfig } = useOtherConfig();
-const { config } = useConfig();
-const { openWorkSpaceByPath } = useWorkSpace();
+const { config, setConf } = useConfig();
+const { openWorkSpaceByPath, watchedDirPath } = useWorkSpace();
 const { isShowSource } = useSourceCode(); // 用于控制大纲显示
 const { init: initSpellCheck } = useSpellCheck();
 const {
@@ -118,15 +128,118 @@ window.electronAPI.on("update:available", onUpdateAvailable);
 
 // 监听手动检查的更新可用事件 (Manual Check from About)
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from "vue";
+
 // 大纲侧边栏两阶段动画状态机
 // closed: 隐藏 | opening: transform 滑入动画 | open: flex 正常布局 | closing-prep: 切回 transform 定位 | closing: transform 滑出动画
 type OutlineState = "closed" | "opening" | "open" | "closing-prep" | "closing";
-const initialOutlineVisible = Boolean(config.value.workspace?.autoExpandSidebar);
+function sidebarVisibilityForContext(contextKey: string): boolean {
+  return resolveSidebarVisibility(
+    readSidebarVisibility(contextKey),
+    Boolean(config.value.workspace?.autoExpandSidebar)
+  );
+}
+
+const initialSidebarContextKey = getSidebarContextKey(
+  watchedDirPath.value ?? config.value.workspace?.startupPath
+);
+let activeSidebarContextKey = initialSidebarContextKey;
+let applyingSidebarContext = false;
+const initialOutlineVisible = sidebarVisibilityForContext(initialSidebarContextKey);
 toggleShowOutline(initialOutlineVisible);
 const outlineState = ref<OutlineState>(initialOutlineVisible ? "open" : "closed");
 const editorAreaRef = ref<HTMLElement | null>(null);
 
+const sidebarWidthController = createSidebarWidthController({
+  getContainerWidth: () => editorAreaRef.value?.getBoundingClientRect().width ?? 0,
+  getPreferredWidth: () => config.value.workspace?.sidebarWidth,
+  setPreferredWidth: (width) => {
+    setConf("workspace", {
+      ...config.value.workspace,
+      sidebarWidth: width,
+    });
+  },
+});
+const savedSidebarWidth = config.value.workspace?.sidebarWidth;
+const sidebarWidth = ref<number | null>(
+  typeof savedSidebarWidth === "number" && Number.isFinite(savedSidebarWidth)
+    ? savedSidebarWidth
+    : null
+);
+const sidebarResizing = ref(false);
+const editorAreaStyle = computed(() => ({
+  "--sidebar-width": sidebarWidth.value === null ? SIDEBAR_DEFAULT_CSS : `${sidebarWidth.value}px`,
+}));
+
+function syncSidebarWidth() {
+  if (!sidebarResizing.value) {
+    sidebarWidth.value = sidebarWidthController.refresh();
+  }
+}
+
+function addSidebarResizeListeners() {
+  window.addEventListener("pointermove", moveSidebarResize);
+  window.addEventListener("pointerup", finishSidebarResize);
+  window.addEventListener("pointercancel", finishSidebarResize);
+  window.addEventListener("blur", finishSidebarResize);
+}
+
+function removeSidebarResizeListeners() {
+  window.removeEventListener("pointermove", moveSidebarResize);
+  window.removeEventListener("pointerup", finishSidebarResize);
+  window.removeEventListener("pointercancel", finishSidebarResize);
+  window.removeEventListener("blur", finishSidebarResize);
+}
+
+function startSidebarResize(event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const handle = event.currentTarget as HTMLElement | null;
+  try {
+    handle?.setPointerCapture(event.pointerId);
+  } catch {
+    // Window-level listeners remain the fallback when pointer capture is unavailable.
+  }
+  sidebarWidthController.beginResize(event.clientX);
+  sidebarResizing.value = true;
+  sidebarWidth.value = sidebarWidthController.getWidth();
+  addSidebarResizeListeners();
+}
+
+function moveSidebarResize(event: PointerEvent) {
+  if (!sidebarResizing.value) return;
+  event.preventDefault();
+  sidebarWidth.value = sidebarWidthController.resizeTo(event.clientX);
+}
+
+function finishSidebarResize() {
+  if (!sidebarResizing.value) return;
+  sidebarResizing.value = false;
+  sidebarWidthController.endResize();
+  sidebarWidth.value = sidebarWidthController.getWidth();
+  removeSidebarResizeListeners();
+}
+
 const outlineClass = computed(() => `outline-${outlineState.value}`);
+
+watch(
+  isShowOutline,
+  (visible) => {
+    if (!applyingSidebarContext) {
+      writeSidebarVisibility(activeSidebarContextKey, visible);
+    }
+  },
+  { flush: "sync" }
+);
+
+watch(watchedDirPath, (workspacePath) => {
+  const nextSidebarContextKey = getSidebarContextKey(workspacePath);
+  if (nextSidebarContextKey === activeSidebarContextKey) return;
+
+  activeSidebarContextKey = nextSidebarContextKey;
+  applyingSidebarContext = true;
+  toggleShowOutline(sidebarVisibilityForContext(nextSidebarContextKey));
+  applyingSidebarContext = false;
+});
 
 watch(isShowOutline, async (val) => {
   if (val) {
@@ -150,6 +263,7 @@ function onOutlineTransitionEnd(e: TransitionEvent) {
 }
 
 onMounted(() => {
+  void nextTick().then(syncSidebarWidth);
   initTheme();
   initFont();
   initOtherConfig();
@@ -164,9 +278,15 @@ onMounted(() => {
   }
   emitter.on("update:available", onUpdateAvailable);
 });
+watch(
+  () => config.value.workspace?.sidebarWidth,
+  () => syncSidebarWidth()
+);
+
 onUnmounted(() => {
   emitter.off("update:available", onUpdateAvailable);
   emitter.off("tab:close-confirm", handleTabCloseConfirm);
+  removeSidebarResizeListeners();
 });
 
 // Reuse safe close logic
@@ -222,9 +342,10 @@ const handleInstall = async () => {
   <TitleBar />
   <div id="fontRoot">
     <!-- ✅ 多编辑器实例：每个 tab 拥有独立的编辑器，v-show 保持 DOM 存活 -->
-    <div ref="editorAreaRef" class="editorArea" :class="outlineClass">
+    <div ref="editorAreaRef" class="editorArea" :class="outlineClass" :style="editorAreaStyle">
       <div class="outlineBox">
         <Outline />
+        <div class="sidebar-resize-handle" @pointerdown="startSidebarResize" />
       </div>
       <div class="editorBox" @transitionend="onOutlineTransitionEnd">
         <!-- Milkup 编辑器（每个 tab 独立实例） -->
@@ -295,7 +416,7 @@ const handleInstall = async () => {
     position: absolute;
     left: 0;
     top: 0;
-    width: 25%;
+    width: var(--sidebar-width);
     height: 100%;
     z-index: 10;
     transform: translateX(-100%);
@@ -306,9 +427,38 @@ const handleInstall = async () => {
       opacity 0.2s ease;
   }
 
+  .sidebar-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    width: 10px;
+    cursor: ew-resize;
+    touch-action: none;
+    background: transparent;
+
+    &::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: -1px;
+      width: 2px;
+      background: var(--primary-color);
+      opacity: 0.35;
+      transition: opacity 0.15s ease;
+    }
+
+    &:hover::after {
+      opacity: 1;
+    }
+  }
+
   .editorBox {
     flex: 1;
     width: 100%;
+    cursor: default;
     transition: transform 0.2s ease;
   }
 
@@ -320,7 +470,7 @@ const handleInstall = async () => {
       pointer-events: auto;
     }
     .editorBox {
-      transform: translateX(25%);
+      transform: translateX(var(--sidebar-width));
     }
   }
 
@@ -352,7 +502,7 @@ const handleInstall = async () => {
     }
     .editorBox {
       width: 100%;
-      transform: translateX(25%);
+      transform: translateX(var(--sidebar-width));
       transition: none;
     }
   }
