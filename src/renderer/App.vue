@@ -342,12 +342,7 @@ const handleInstall = async () => {
   <TitleBar />
   <div id="fontRoot">
     <!-- ✅ 多编辑器实例：每个 tab 拥有独立的编辑器，v-show 保持 DOM 存活 -->
-    <div
-      ref="editorAreaRef"
-      class="editorArea"
-      :class="[outlineClass, { 'sidebar-resizing': sidebarResizing }]"
-      :style="editorAreaStyle"
-    >
+    <div ref="editorAreaRef" class="editorArea" :class="outlineClass" :style="editorAreaStyle">
       <div class="outlineBox">
         <Outline />
         <div class="sidebar-resize-handle" @pointerdown="startSidebarResize" />
@@ -439,30 +434,23 @@ const handleInstall = async () => {
     bottom: 0;
     z-index: 20;
     width: 10px;
-    cursor: col-resize;
+    cursor: ew-resize;
     touch-action: none;
     background: transparent;
-    transition: background 0.15s ease;
 
     &::after {
       content: "";
       position: absolute;
       top: 0;
       bottom: 0;
-      left: 4px;
+      right: -1px;
       width: 2px;
       background: var(--primary-color);
       opacity: 0.35;
       transition: opacity 0.15s ease;
     }
 
-    &:hover,
-    .sidebar-resizing & {
-      background: color-mix(in srgb, var(--primary-color) 16%, transparent);
-    }
-
-    &:hover::after,
-    .sidebar-resizing &::after {
+    &:hover::after {
       opacity: 1;
     }
   }
@@ -470,6 +458,7 @@ const handleInstall = async () => {
   .editorBox {
     flex: 1;
     width: 100%;
+    cursor: default;
     transition: transform 0.2s ease;
   }
 
