@@ -59,6 +59,8 @@ export interface MilkupEditor {
   destroy: () => void;
   /** 聚焦编辑器 */
   focus: () => void;
+  /** 在编辑器重新可见后重试异步 PNG 剪贴板回退 */
+  refreshClipboardFallbacks: () => void;
   /** 获取光标位置（在源码中的偏移量） */
   getCursorOffset: () => number;
   /** 设置光标位置 */

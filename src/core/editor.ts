@@ -17,6 +17,18 @@ import { keymap } from "prosemirror-keymap";
 import "katex/dist/katex.min.css";
 
 import { milkupSchema } from "./schema";
+import {
+  buildClipboardPayload,
+  canDeleteAfterClipboardWrite,
+  getClipboardFontFamilies,
+  getRenderedNodeRoot,
+  getRenderedSelectionRoot,
+  hasRenderedClipboardNode,
+  refreshClipboardFallbacks,
+  writeClipboardEvent,
+  writeClipboardPayload,
+  type ClipboardPayload,
+} from "./clipboard";
 import { parseMarkdown, MarkdownParser } from "./parser";
 import { serializeMarkdown, MarkdownSerializer } from "./serializer";
 import { createInstantRenderPlugin } from "./plugins/instant-render";
@@ -32,6 +44,7 @@ import {
   createPastePlugin,
   containsMarkdownSyntax,
   fileToBase64,
+  getImagePasteMethod,
   parseMarkdownPasteSlice,
   saveImageLocally,
   ImagePasteMethod,
@@ -119,6 +132,11 @@ const defaultConfig: MilkupConfig = {
   sourceView: false,
 };
 
+// Flow text uses ProseMirror's semantic clipboard DOM; live DOM is for bounded nodes.
+function shouldUseRenderedClipboardDom(view: EditorView): boolean {
+  return hasRenderedClipboardNode(view.state.selection.content().content);
+}
+
 /**
  * Milkup 编辑器类
  */
@@ -176,7 +194,8 @@ export class MilkupEditor implements IMilkupEditor {
         return parseMarkdownPasteSlice(text, this.parser) || Slice.empty;
       },
       nodeViews: {
-        code_block: createCodeBlockNodeView,
+        code_block: (node, view, getPos) =>
+          createCodeBlockNodeView(node, view, getPos, () => this.config.readonly === true),
         math_block: createMathBlockNodeView,
         html_block: createHtmlBlockNodeView,
         image: createImageNodeView,
@@ -194,6 +213,7 @@ export class MilkupEditor implements IMilkupEditor {
       handleDOMEvents: {
         contextmenu: (view, event) => this.handleContextMenu(view, event),
         copy: (view, event) => this.handleCopy(view, event),
+        cut: (view, event) => this.handleCut(view, event),
       },
     });
 
@@ -409,6 +429,11 @@ export class MilkupEditor implements IMilkupEditor {
    */
   focus(): void {
     this.view.focus();
+  }
+
+  /** Retry async PNG fallbacks after a previously hidden editor becomes visible. */
+  refreshClipboardFallbacks(): void {
+    refreshClipboardFallbacks(this.view.dom);
   }
 
   /**
@@ -788,16 +813,137 @@ export class MilkupEditor implements IMilkupEditor {
     this.view.dispatch(tr);
   }
 
-  /**
-   * 复制时根据当前选区决定表格内容的输出格式
-   */
-  private handleCopy(_view: EditorView, event: ClipboardEvent): boolean {
-    if (this.view.state.selection.empty) return false;
+  /** 复制时保留当前表格选区的纯文本规则，并同时写入富文本。 */
+  private handleCopy(view: EditorView, event: ClipboardEvent): boolean {
+    if (
+      this.isClipboardEventFromCodeBlock(view, event) ||
+      this.isClipboardEventFromHtmlBlockEditor(view, event) ||
+      view.state.selection.empty
+    )
+      return false;
 
-    const text = this.serializeSelectionForClipboard();
-    event.clipboardData?.setData("text/plain", text);
-    event.preventDefault();
+    const plain = this.serializeSelectionForClipboard();
+    return this.writeNativeClipboard(view, event, plain, false);
+  }
+
+  /** 剪切只在双格式载荷写入成功后修改文档。 */
+  private handleCut(view: EditorView, event: ClipboardEvent): boolean {
+    if (
+      this.isClipboardEventFromCodeBlock(view, event) ||
+      this.isClipboardEventFromHtmlBlockEditor(view, event) ||
+      !view.editable ||
+      view.state.selection.empty
+    ) {
+      return false;
+    }
+
+    const plain = this.serializeSelectionForClipboard();
+    return this.writeNativeClipboard(view, event, plain, true);
+  }
+
+  private writeNativeClipboard(
+    view: EditorView,
+    event: ClipboardEvent,
+    plain: string,
+    cut: boolean
+  ): boolean {
+    const payload = this.createRichClipboardPayload(view, plain);
+    const result = writeClipboardEvent(event, payload);
+    if (cut && !canDeleteAfterClipboardWrite(payload, result)) {
+      event.preventDefault();
+      return true;
+    }
+    if (result.status === "failed") return false;
+
+    if (cut) {
+      view.dispatch(view.state.tr.deleteSelection().scrollIntoView().setMeta("uiEvent", "cut"));
+    }
     return true;
+  }
+
+  private isSelectionInsideNodeType(view: EditorView, typeName: string): boolean {
+    const { from, to } = view.state.selection;
+    let selectionInsideNode = false;
+    view.state.doc.nodesBetween(from, to, (node, pos) => {
+      if (node.type.name === typeName && from >= pos && to <= pos + node.nodeSize) {
+        selectionInsideNode = true;
+        return false;
+      }
+      return !selectionInsideNode;
+    });
+    return selectionInsideNode;
+  }
+
+  private isClipboardEventFromCodeBlock(view: EditorView, event: ClipboardEvent): boolean {
+    const target = event.target as Element | null;
+    return (
+      !!target?.closest?.(".milkup-code-block") &&
+      this.isSelectionInsideNodeType(view, "code_block")
+    );
+  }
+
+  private isClipboardEventFromHtmlBlockEditor(view: EditorView, event: ClipboardEvent): boolean {
+    const target = event.target as Element | null;
+    return (
+      !!target?.closest?.(".milkup-html-block-editor") &&
+      this.isSelectionInsideNodeType(view, "html_block")
+    );
+  }
+
+  private getClipboardImageMode(): ImagePasteMethod {
+    return this.config.pasteConfig?.getImagePasteMethod?.() ?? getImagePasteMethod();
+  }
+
+  private buildClipboardPayloadForDom(
+    dom: HTMLElement,
+    plain: string,
+    sourceView: boolean,
+    imageMode?: ImagePasteMethod
+  ): ClipboardPayload {
+    return buildClipboardPayload(plain, dom, {
+      sourceView,
+      imageMode: imageMode ?? (sourceView ? undefined : this.getClipboardImageMode()),
+      ...getClipboardFontFamilies(
+        this.view.dom,
+        this.view.dom.querySelector<HTMLElement>(".cm-content") ?? undefined
+      ),
+    });
+  }
+
+  private createRichClipboardPayload(view: EditorView, plain: string): ClipboardPayload {
+    const sourceView = this.isSourceViewEnabled();
+    const imageMode = sourceView ? undefined : this.getClipboardImageMode();
+    try {
+      const renderedRoot =
+        sourceView || !shouldUseRenderedClipboardDom(view)
+          ? null
+          : getRenderedSelectionRoot(view, imageMode);
+      const dom = renderedRoot ?? view.serializeForClipboard(view.state.selection.content()).dom;
+      return this.buildClipboardPayloadForDom(dom, plain, sourceView, imageMode);
+    } catch (error) {
+      console.error("生成富文本剪贴板失败", error);
+      return { plain, html: "", richRequired: !sourceView };
+    }
+  }
+
+  private createCurrentTableClipboardPayload(): ClipboardPayload | null {
+    const tableInfo = this.getTableAtPosition(this.view.state.selection.from);
+    if (!tableInfo) return null;
+
+    const doc = this.schema.topNodeType.create(null, tableInfo.node);
+    const plain = serializeMarkdown(doc).trimEnd();
+    try {
+      const sourceView = this.isSourceViewEnabled();
+      const imageMode = sourceView ? undefined : this.getClipboardImageMode();
+      const renderedRoot = sourceView
+        ? null
+        : getRenderedNodeRoot(this.view, tableInfo.pos, imageMode);
+      const dom = renderedRoot ?? this.view.serializeForClipboard(new Slice(doc.content, 0, 0)).dom;
+      return this.buildClipboardPayloadForDom(dom, plain, sourceView, imageMode);
+    } catch (error) {
+      console.error("生成表格剪贴板失败", error);
+      return { plain, html: "", richRequired: true };
+    }
   }
 
   /**
@@ -975,22 +1121,35 @@ export class MilkupEditor implements IMilkupEditor {
     if (this._destroyed) return;
 
     // 复制
-    const copyItem = this.createContextMenuItem("复制", !hasSelection, () => {
-      const text = this.serializeSelectionForClipboard();
-      navigator.clipboard.writeText(text);
+    const copyItem = this.createContextMenuItem("复制", !hasSelection, async () => {
+      const plain = this.serializeSelectionForClipboard();
+      const payload = this.createRichClipboardPayload(this.view, plain);
+      await writeClipboardPayload(payload);
       this.hideContextMenu();
     });
     menu.appendChild(copyItem);
 
     // 剪切
-    const cutItem = this.createContextMenuItem("剪切", !hasSelection, () => {
-      const slice = this.view.state.selection.content();
-      const text = this.serializeSliceToMarkdown(slice);
-      navigator.clipboard.writeText(text);
-      const tr = this.view.state.tr.deleteSelection();
-      this.view.dispatch(tr);
-      this.hideContextMenu();
-    });
+    const cutItem = this.createContextMenuItem(
+      "剪切",
+      !hasSelection || !this.view.editable,
+      async () => {
+        if (!this.view.editable) return;
+
+        const state = this.view.state;
+        const plain = this.serializeSelectionForClipboard();
+        const payload = this.createRichClipboardPayload(this.view, plain);
+        const result = await writeClipboardPayload(payload);
+        const canDelete = this.view.editable && canDeleteAfterClipboardWrite(payload, result);
+        const selection = this.view.state.selection;
+        if (canDelete && this.view.state.doc === state.doc && selection.eq(state.selection)) {
+          this.view.dispatch(
+            this.view.state.tr.deleteSelection().scrollIntoView().setMeta("uiEvent", "cut")
+          );
+        }
+        this.hideContextMenu();
+      }
+    );
     menu.appendChild(cutItem);
 
     // 粘贴 - 使用 Clipboard API 读取内容并手动处理
@@ -1011,11 +1170,9 @@ export class MilkupEditor implements IMilkupEditor {
       menu.appendChild(this.createContextMenuSeparator());
 
       menu.appendChild(
-        this.createContextMenuItem("复制表格", false, () => {
-          const tableMarkdown = this.getCurrentTableMarkdown();
-          if (tableMarkdown) {
-            navigator.clipboard.writeText(tableMarkdown);
-          }
+        this.createContextMenuItem("复制表格", false, async () => {
+          const payload = this.createCurrentTableClipboardPayload();
+          if (payload) await writeClipboardPayload(payload);
           this.hideContextMenu();
         })
       );
@@ -1136,7 +1293,7 @@ export class MilkupEditor implements IMilkupEditor {
   private createContextMenuItem(
     label: string,
     disabled: boolean,
-    onClick: () => void
+    onClick: () => void | Promise<void>
   ): HTMLElement {
     const item = document.createElement("div");
     item.className = "milkup-context-menu-item";
@@ -1148,7 +1305,7 @@ export class MilkupEditor implements IMilkupEditor {
     if (!disabled) {
       item.addEventListener("click", (e) => {
         e.stopPropagation();
-        onClick();
+        void onClick();
       });
     }
 
@@ -1198,7 +1355,7 @@ export class MilkupEditor implements IMilkupEditor {
     if (!disabled) {
       item.addEventListener("click", (e) => {
         e.stopPropagation();
-        onClick();
+        void onClick();
       });
     }
 
@@ -1820,14 +1977,6 @@ export class MilkupEditor implements IMilkupEditor {
       ...rows.slice(1).map((row) => `| ${row.join(" | ")} |`),
     ];
     return lines.join("\n");
-  }
-
-  private getCurrentTableMarkdown(): string | null {
-    const tableInfo = this.getTableAtPosition(this.view.state.selection.from);
-    if (!tableInfo) return null;
-
-    const doc = this.schema.topNodeType.create(null, tableInfo.node);
-    return serializeMarkdown(doc).trimEnd();
   }
 
   private getCommonSelectedTable(from: number, to: number): { node: Node; pos: number } | null {

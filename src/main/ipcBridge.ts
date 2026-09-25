@@ -1223,9 +1223,32 @@ export function registerGlobalIpcHandlers() {
     wslDirWatcher.unwatchAll();
   });
 
+  ipcMain.handle(
+    "clipboard:write",
+    async (_event, payload: { text?: unknown; html?: unknown }): Promise<boolean> => {
+      const text = typeof payload?.text === "string" ? payload.text : "";
+      const html = typeof payload?.html === "string" ? payload.html : "";
+      try {
+        if (html) {
+          clipboard.write({ text, html });
+        } else {
+          clipboard.writeText(text);
+        }
+        return true;
+      } catch (error) {
+        console.error("写入剪贴板失败", error);
+        return false;
+      }
+    }
+  );
   ipcMain.handle("clipboard:writeText", async (_event, text: string): Promise<boolean> => {
-    clipboard.writeText(text ?? "");
-    return true;
+    try {
+      clipboard.writeText(text ?? "");
+      return true;
+    } catch (error) {
+      console.error("写入剪贴板失败", error);
+      return false;
+    }
   });
   ipcMain.handle(
     "image:openPreview",
