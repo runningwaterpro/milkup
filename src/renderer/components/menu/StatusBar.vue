@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import AppIcon from "@/renderer/components/ui/AppIcon.vue";
 import { toggleShowOutline } from "@/renderer/hooks/useOutline";
+import useEditorZoom from "@/renderer/hooks/useEditorZoom";
 import useSourceCode from "@/renderer/hooks/useSourceCode";
 
 const props = defineProps<{
@@ -15,6 +16,8 @@ const emit = defineEmits<{
 }>();
 
 const { isShowSource, toggleSourceCode } = useSourceCode();
+const { zoomPercent, canZoomOut, canZoomIn, canResetZoom, zoomOut, resetZoom, zoomIn } =
+  useEditorZoom();
 const mode = ref<"chars" | "lines">("chars");
 
 const displayText = computed(() => {
@@ -90,7 +93,39 @@ window.electronAPI.on("view:toggleView", () => {
       </div>
     </div>
 
-    <span class="statusBarText" @click="cycleMode">{{ displayText }}</span>
+    <div class="right-section">
+      <span class="statusBarText" @click="cycleMode">{{ displayText }}</span>
+      <div class="zoomControls" role="group" aria-label="编辑视图缩放">
+        <button
+          type="button"
+          aria-label="缩小编辑区"
+          title="缩小编辑区"
+          :disabled="!canZoomOut"
+          @click="zoomOut"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          class="zoomValue"
+          :aria-label="`编辑区缩放 ${zoomPercent}%，点击还原`"
+          :title="`编辑区缩放 ${zoomPercent}%，点击还原`"
+          :disabled="!canResetZoom"
+          @click="resetZoom"
+        >
+          {{ zoomPercent }}%
+        </button>
+        <button
+          type="button"
+          aria-label="放大编辑区"
+          title="放大编辑区"
+          :disabled="!canZoomIn"
+          @click="zoomIn"
+        >
+          +
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -119,6 +154,47 @@ window.electronAPI.on("view:toggleView", () => {
     &:hover {
       background: var(--hover-color);
     }
+  }
+}
+
+.right-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zoomControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+
+  button {
+    min-width: 24px;
+    height: 22px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--hover-color);
+    }
+
+    &:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+  }
+
+  .zoomValue {
+    min-width: 48px;
+    color: var(--text-color-3);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
 }
 

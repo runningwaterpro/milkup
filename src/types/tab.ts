@@ -5,6 +5,7 @@ export interface Tab {
   content: string;
   originalContent: string;
   isModified: boolean;
+  zoomPercent?: number;
   scrollRatio?: number;
   readOnly: boolean;
   milkdownCursorOffset?: number | null;
