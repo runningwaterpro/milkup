@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import AppIcon from "@/renderer/components/ui/AppIcon.vue";
 import { Switch } from "@renderer/components/ui/switch";
 import { useConfig } from "@/renderer/hooks/useConfig";
+import { isShowOutline, toggleShowOutline } from "@/renderer/hooks/useOutline";
 import useWorkSpace from "@/renderer/hooks/useWorkSpace";
 import { isAbsoluteLocalPath } from "@/renderer/utils/workspacePath";
 
@@ -10,7 +11,6 @@ const { config, setConf } = useConfig();
 const { watchedDirPath, openWorkSpaceByPath } = useWorkSpace();
 
 const startupPath = computed(() => config.value.workspace?.startupPath ?? "");
-const autoExpandSidebar = computed(() => config.value.workspace?.autoExpandSidebar ?? false);
 const isPathExists = ref(true);
 
 async function handleSelectWorkspace() {
@@ -40,13 +40,6 @@ function clearWorkspacePath() {
   setConf("workspace", {
     ...config.value.workspace,
     startupPath: "",
-  });
-}
-
-function updateAutoExpandSidebar(value: boolean) {
-  setConf("workspace", {
-    ...config.value.workspace,
-    autoExpandSidebar: value,
   });
 }
 
@@ -103,10 +96,13 @@ onMounted(() => {
       <span class="row-label">左侧边栏</span>
       <div class="switch-wrapper">
         <Switch
-          :model-value="autoExpandSidebar"
-          label="启动时自动展开文件夹 / 大纲栏"
-          @update:model-value="updateAutoExpandSidebar"
+          :model-value="isShowOutline"
+          label="显示侧边栏"
+          @update:model-value="toggleShowOutline"
         />
+        <p class="setting-hint">
+          关闭或打开侧边栏后会立即生效；关闭程序后，下次打开时仍保持最后的选择。
+        </p>
       </div>
     </div>
   </div>
@@ -201,6 +197,13 @@ onMounted(() => {
 
   .switch-wrapper {
     padding-top: 8px;
+
+    .setting-hint {
+      margin: 6px 0 0;
+      color: var(--text-color-3);
+      font-size: 12px;
+      line-height: 1.5;
+    }
   }
 
   .path-tip {

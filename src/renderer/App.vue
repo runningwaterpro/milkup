@@ -18,6 +18,12 @@ import useUiLoading from "@/renderer/hooks/useUiLoading";
 import { useUpdateDialog } from "@/renderer/hooks/useUpdateDialog";
 import useWorkSpace from "@/renderer/hooks/useWorkSpace";
 import { shouldAutoLoadWorkspace } from "@/renderer/utils/workspacePath";
+import {
+  getSidebarContextKey,
+  readSidebarVisibility,
+  resolveSidebarVisibility,
+  writeSidebarVisibility,
+} from "@/renderer/utils/sidebarVisibility";
 import SaveConfirmDialog from "./components/dialogs/SaveConfirmDialog.vue";
 import UpdateConfirmDialog from "./components/dialogs/UpdateConfirmDialog.vue";
 import MilkupEditor from "./components/editor/MilkupEditor.vue";
@@ -35,7 +41,7 @@ const { isLoading, loadingMessage } = useUiLoading();
 const { init: initFont } = useFont();
 const { init: initOtherConfig } = useOtherConfig();
 const { config, setConf } = useConfig();
-const { openWorkSpaceByPath } = useWorkSpace();
+const { openWorkSpaceByPath, watchedDirPath } = useWorkSpace();
 const { isShowSource } = useSourceCode(); // 用于控制大纲显示
 const { init: initSpellCheck } = useSpellCheck();
 const {
@@ -126,7 +132,19 @@ import { onMounted, onUnmounted, ref, watch, nextTick, computed } from "vue";
 // 大纲侧边栏两阶段动画状态机
 // closed: 隐藏 | opening: transform 滑入动画 | open: flex 正常布局 | closing-prep: 切回 transform 定位 | closing: transform 滑出动画
 type OutlineState = "closed" | "opening" | "open" | "closing-prep" | "closing";
-const initialOutlineVisible = Boolean(config.value.workspace?.autoExpandSidebar);
+function sidebarVisibilityForContext(contextKey: string): boolean {
+  return resolveSidebarVisibility(
+    readSidebarVisibility(contextKey),
+    Boolean(config.value.workspace?.autoExpandSidebar)
+  );
+}
+
+const initialSidebarContextKey = getSidebarContextKey(
+  watchedDirPath.value ?? config.value.workspace?.startupPath
+);
+let activeSidebarContextKey = initialSidebarContextKey;
+let applyingSidebarContext = false;
+const initialOutlineVisible = sidebarVisibilityForContext(initialSidebarContextKey);
 toggleShowOutline(initialOutlineVisible);
 const outlineState = ref<OutlineState>(initialOutlineVisible ? "open" : "closed");
 const editorAreaRef = ref<HTMLElement | null>(null);
@@ -202,6 +220,26 @@ function finishSidebarResize() {
 }
 
 const outlineClass = computed(() => `outline-${outlineState.value}`);
+
+watch(
+  isShowOutline,
+  (visible) => {
+    if (!applyingSidebarContext) {
+      writeSidebarVisibility(activeSidebarContextKey, visible);
+    }
+  },
+  { flush: "sync" }
+);
+
+watch(watchedDirPath, (workspacePath) => {
+  const nextSidebarContextKey = getSidebarContextKey(workspacePath);
+  if (nextSidebarContextKey === activeSidebarContextKey) return;
+
+  activeSidebarContextKey = nextSidebarContextKey;
+  applyingSidebarContext = true;
+  toggleShowOutline(sidebarVisibilityForContext(nextSidebarContextKey));
+  applyingSidebarContext = false;
+});
 
 watch(isShowOutline, async (val) => {
   if (val) {
