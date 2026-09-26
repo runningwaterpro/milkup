@@ -487,6 +487,8 @@ export class MilkupEditor implements IMilkupEditor {
   private static readonly IS_MAC =
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
   private static readonly MOD_KEY = MilkupEditor.IS_MAC ? "⌘" : "Ctrl";
+  /** 与 .milkup-link-tooltip 的 max-width 保持一致 */
+  private static readonly LINK_TOOLTIP_MAX_WIDTH = 400;
 
   /** 从 DOM 元素向上查找最近的 <a> 标签 */
   private findLinkElement(target: HTMLElement): HTMLAnchorElement | null {
@@ -718,12 +720,12 @@ export class MilkupEditor implements IMilkupEditor {
       return;
     }
 
-    const container = this.view.dom.parentElement || this.view.dom;
-
     if (!this.linkTooltip) {
       this.linkTooltip = document.createElement("div");
       this.linkTooltip.className = "milkup-link-tooltip";
-      container.appendChild(this.linkTooltip);
+      // 挂在 body 上并用 fixed 定位：编辑区可能被缩放，挂在缩放容器内
+      // 既会跟着放大，也会被滚动容器裁掉
+      document.body.appendChild(this.linkTooltip);
     }
 
     const tip = this.linkTooltip;
@@ -731,24 +733,16 @@ export class MilkupEditor implements IMilkupEditor {
     tip.textContent = `${displayHref}  ${MilkupEditor.MOD_KEY}+左击访问`;
     tip.style.display = "block";
 
+    // fixed 定位使用视口坐标，缩放不影响这里的计算
     const linkRect = linkEl.getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
-
-    let left = linkRect.left - containerRect.left;
-    const top = linkRect.bottom - containerRect.top + 4;
-    tip.style.top = `${top}px`;
+    const margin = 8;
+    let left = linkRect.left;
+    // 只有贴近右边缘时才读一次宽度做钳制，避免每次 hover 都强制同步布局
+    if (left + LINK_TOOLTIP_MAX_WIDTH > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - tip.offsetWidth - margin);
+    }
     tip.style.left = `${left}px`;
-
-    // 下一帧修正右侧溢出
-    requestAnimationFrame(() => {
-      if (!this.linkTooltip) return;
-      const tipRect = this.linkTooltip.getBoundingClientRect();
-      const cr = container.getBoundingClientRect();
-      if (tipRect.right > cr.right - 8) {
-        left = cr.right - cr.left - tipRect.width - 8;
-        this.linkTooltip.style.left = `${Math.max(0, left)}px`;
-      }
-    });
+    tip.style.top = `${linkRect.bottom + 4}px`;
 
     this.linkTooltipCurrentLink = linkEl;
   }
