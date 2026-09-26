@@ -263,6 +263,7 @@ function onOutlineTransitionEnd(e: TransitionEvent) {
 }
 
 onMounted(() => {
+  window.addEventListener("resize", syncSidebarWidth);
   void nextTick().then(syncSidebarWidth);
   initTheme();
   initFont();
@@ -284,6 +285,7 @@ watch(
 );
 
 onUnmounted(() => {
+  window.removeEventListener("resize", syncSidebarWidth);
   emitter.off("update:available", onUpdateAvailable);
   emitter.off("tab:close-confirm", handleTabCloseConfirm);
   removeSidebarResizeListeners();
