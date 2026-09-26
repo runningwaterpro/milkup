@@ -1,4 +1,6 @@
-import { decode as decodeHtml } from "he";
+import he from "he";
+
+const { decode: decodeHtml } = he;
 
 export const HTML_ENTITY_SYNTAX_TYPE = "html_entity";
 
