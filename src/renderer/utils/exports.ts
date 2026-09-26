@@ -94,6 +94,9 @@ function cloneWithInlineStyles(element: HTMLElement): HTMLElement {
 function applyStylesRecursive(src: Element, dest: Element): void {
   const computed = getComputedStyle(src);
   const style = Array.from(computed)
+    // 编辑区缩放只是显示层，导出必须保持原始排版。
+    // 辅助工具靠 zoom 反向缩放保持固定尺寸，这个值不能进导出文件。
+    .filter((key) => key !== "zoom")
     .map((key) => `${key}:${computed.getPropertyValue(key)};`)
     .join("");
   dest.setAttribute("style", style);
