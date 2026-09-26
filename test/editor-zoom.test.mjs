@@ -150,8 +150,32 @@ test("read-only documents can be zoomed and stay read-only", () => {
   assert.equal(tab.originalContent, "# Note");
 });
 
-// 复刻 useShortcutConfig.eventMatchesShortcutKey 的核心逻辑：
-// 「Mod」在 Windows 上是 Ctrl、在 Mac 上是 Meta，其余修饰键要求精确一致。
+// 复刻 useShortcutConfig.eventMatchesShortcutKey：主键比对前把 Shift 变体
+// 归一化到基础键。Ctrl+Shift+0 时浏览器报 event.key = ")"，但用户存的是 "0"。
+const SHIFTED_TO_BASE = {
+  ")": "0",
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  _: "-",
+  "+": "=",
+  "{": "[",
+  "}": "]",
+  "|": "\\",
+  ":": ";",
+  '"': "'",
+  "<": ",",
+  ">": ".",
+  "?": "/",
+};
+const toBase = (k) => SHIFTED_TO_BASE[k] ?? k;
+
 function makeMatcher(isMac) {
   return (event, binding) => {
     if (!binding) return false;
@@ -161,7 +185,7 @@ function makeMatcher(isMac) {
     if (mods.includes("Mod") !== (isMac ? on(event.metaKey) : on(event.ctrlKey))) return false;
     if (mods.includes("Shift") !== on(event.shiftKey)) return false;
     if (mods.includes("Alt") !== on(event.altKey)) return false;
-    return main === event.key;
+    return toBase(main) === toBase(event.key);
   };
 }
 
@@ -170,11 +194,12 @@ test("keyboard shortcuts follow the configured bindings", () => {
   const matches = makeMatcher(false);
   const controller = createEditorZoomController(activeTab, undefined, matches);
 
-  // Shift 让 0 变成 ")"、. 变成 ">"、, 变成 "<"
+  // Shift 让 . 变成 ">"、, 变成 "<"、0 变成 ")"
   assert.equal(controller.handleKeydown({ key: ">", shiftKey: true, ctrlKey: true }), true);
   assert.equal(controller.zoomPercent.value, 110);
   assert.equal(controller.handleKeydown({ key: "<", shiftKey: true, ctrlKey: true }), true);
   assert.equal(controller.zoomPercent.value, 100);
+  // 绑定存 "0"，浏览器报 ")" —— 归一化后仍要匹配
   assert.equal(controller.handleKeydown({ key: ")", shiftKey: true, ctrlKey: true }), true);
   assert.equal(controller.zoomPercent.value, 100);
 
@@ -196,7 +221,7 @@ test("Mac 用 Cmd 而不是 Ctrl", () => {
 
 test("缩放快捷键绑定在设置里可改，改完立即生效", () => {
   const activeTab = ref(createTab());
-  let bindings = { zoomIn: "Mod-Shift->", zoomOut: "Mod-Shift-<", resetZoom: "Mod-Shift-)" };
+  let bindings = { zoomIn: "Mod-Shift->", zoomOut: "Mod-Shift-<", resetZoom: "Mod-Shift-0" };
   const matches = makeMatcher(false);
   const controller = createEditorZoomController(activeTab, () => bindings, matches);
 
@@ -205,6 +230,15 @@ test("缩放快捷键绑定在设置里可改，改完立即生效", () => {
   assert.equal(controller.zoomPercent.value, 100);
   assert.equal(controller.handleKeydown({ key: "p", altKey: true }), true);
   assert.equal(controller.zoomPercent.value, 110);
+
+  // 还原从 ")" 改成用户习惯的 "0"，两种写法都要能匹配
+  bindings = { ...bindings, resetZoom: "Mod-Shift-0" };
+  controller.resetZoom();
+  assert.equal(controller.zoomPercent.value, 100);
+  bindings = { ...bindings, resetZoom: "Mod-Shift-)" };
+  controller.zoomIn();
+  assert.equal(controller.handleKeydown({ key: ")", shiftKey: true, ctrlKey: true }), true);
+  assert.equal(controller.zoomPercent.value, 100);
 });
 
 test("缩放快捷键不占用「设为段落」的 Ctrl+0，也不撞分割线", () => {
@@ -216,7 +250,7 @@ test("缩放快捷键不占用「设为段落」的 Ctrl+0，也不撞分割线"
   // 缩放三条用 Period / Comma / Digit0，都不与上面两条相同
   assert.equal(byId("zoomIn"), "Mod-Shift->");
   assert.equal(byId("zoomOut"), "Mod-Shift-<");
-  assert.equal(byId("resetZoom"), "Mod-Shift-)");
+  assert.equal(byId("resetZoom"), "Mod-Shift-0");
   // action-commands.ts 只按 id 赋值，没有这三条 → commandMap 里取不到
   // → dynamic-keymap 的 `if (command && boundKey)` 会跳过，不会进 keymap
   const source = readFileSync(

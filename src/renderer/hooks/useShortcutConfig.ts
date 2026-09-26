@@ -244,6 +244,37 @@ function keyEventToExactShortcutKey(
   return parts.join("-");
 }
 
+/**
+ * Shift 变体 → 基础键。主键比对前两边都归一化到这里，
+ * 这样存 "0" 或存 ")" 都能匹配 Ctrl+Shift+0（浏览器此时报 event.key = ")"）。
+ */
+const SHIFTED_TO_BASE: Record<string, string> = {
+  ")": "0",
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  _: "-",
+  "+": "=",
+  "{": "[",
+  "}": "]",
+  "|": "\\",
+  ":": ";",
+  '"': "'",
+  "<": ",",
+  ">": ".",
+  "?": "/",
+};
+
+function toBaseKey(key: string): string {
+  return SHIFTED_TO_BASE[key] ?? key;
+}
+
 export function eventMatchesShortcutKey(
   event: KeyboardEvent,
   shortcutKey: string,
@@ -260,7 +291,7 @@ export function eventMatchesShortcutKey(
   if (options.ignoreMainKey) return true;
   if (!expectedMainKey) return false;
 
-  return normalizeKeyboardEventKey(event.key) === expectedMainKey;
+  return toBaseKey(normalizeKeyboardEventKey(event.key)) === toBaseKey(expectedMainKey);
 }
 
 function eventMatchesModifiers(event: KeyboardEvent, expectedModifiers: string[]): boolean {

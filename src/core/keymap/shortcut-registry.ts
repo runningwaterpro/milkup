@@ -150,8 +150,8 @@ export const DEFAULT_SHORTCUTS: ShortcutDefinition[] = [
     id: "resetZoom",
     label: "还原",
     category: "editor",
-    key: "Mod-Shift-)",
-    defaultKey: "Mod-Shift-)",
+    key: "Mod-Shift-0",
+    defaultKey: "Mod-Shift-0",
   },
 ];
 

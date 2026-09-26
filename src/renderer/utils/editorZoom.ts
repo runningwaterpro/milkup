@@ -31,7 +31,7 @@ export type EditorZoomBindings = {
 export const DEFAULT_ZOOM_BINDINGS: EditorZoomBindings = {
   zoomIn: "Mod-Shift->",
   zoomOut: "Mod-Shift-<",
-  resetZoom: "Mod-Shift-)",
+  resetZoom: "Mod-Shift-0",
 };
 
 export function createEditorZoomController(
