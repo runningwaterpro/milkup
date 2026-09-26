@@ -22,7 +22,23 @@ function getContentStyle(tab: Tab | null | undefined): EditorZoomStyle {
   return { "--editor-zoom-inverse": 1 / zoom, zoom };
 }
 
-export function createEditorZoomController(activeTab: Readonly<Ref<Tab | null>>) {
+export type EditorZoomBindings = {
+  zoomIn: string;
+  zoomOut: string;
+  resetZoom: string;
+};
+
+export const DEFAULT_ZOOM_BINDINGS: EditorZoomBindings = {
+  zoomIn: "Mod-Shift->",
+  zoomOut: "Mod-Shift-<",
+  resetZoom: "Mod-Shift-)",
+};
+
+export function createEditorZoomController(
+  activeTab: Readonly<Ref<Tab | null>>,
+  getBindings: () => EditorZoomBindings = () => DEFAULT_ZOOM_BINDINGS,
+  matches: (event: KeyboardEvent, binding: string) => boolean = () => false
+) {
   const hasActiveTab = computed(() => activeTab.value !== null);
   const zoomPercent = computed(() => getZoomPercent(activeTab.value));
   const canZoomOut = computed(() => hasActiveTab.value && zoomPercent.value > MIN_ZOOM_PERCENT);
@@ -48,27 +64,24 @@ export function createEditorZoomController(activeTab: Readonly<Ref<Tab | null>>)
   }
 
   /**
-   * 匹配物理键位而不是 event.key。
-   * Ctrl/Cmd + Shift + 0 产生的 key 是 ")"，+ Shift + - 产生的是 "_"，
-   * 用 key 匹配不到用户实际按的键；code 不受 Shift 影响，也跨键盘布局稳定。
+   * 匹配用户配置的绑定。走配置而不是硬编码，设置里改完立即生效。
+   * 用 event.key（键位字符）即可：Ctrl+Shift+, 产生的正是 "<"。
    */
-  function handleKeydown(event: KeyboardEvent, isMac: boolean): boolean {
-    const hasModifier = isMac ? event.metaKey : event.ctrlKey;
-    if (!hasModifier || event.altKey || !event.shiftKey) return false;
-
-    switch (event.code) {
-      case "Equal":
-        zoomIn();
-        return true;
-      case "Minus":
-        zoomOut();
-        return true;
-      case "Digit0":
-        resetZoom();
-        return true;
-      default:
-        return false;
+  function handleKeydown(event: KeyboardEvent): boolean {
+    const bindings = getBindings();
+    if (matches(event, bindings.zoomIn)) {
+      zoomIn();
+      return true;
     }
+    if (matches(event, bindings.zoomOut)) {
+      zoomOut();
+      return true;
+    }
+    if (matches(event, bindings.resetZoom)) {
+      resetZoom();
+      return true;
+    }
+    return false;
   }
 
   let wheelAccumulator = 0;

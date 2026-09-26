@@ -28,7 +28,10 @@ export type ShortcutActionId =
   | "switchNextTab"
   | "switchTabByNumber"
   | "undo"
-  | "redo";
+  | "redo"
+  | "zoomIn"
+  | "zoomOut"
+  | "resetZoom";
 
 /** 快捷键分类 */
 export type ShortcutCategory = "inline" | "block" | "insert" | "editor" | "app";
