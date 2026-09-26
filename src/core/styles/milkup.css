@@ -1622,9 +1622,10 @@
 }
 
 /* ============ 链接 Tooltip ============ */
+/* 挂在 body 上并用视口坐标定位，不受编辑区缩放影响 */
 .milkup-link-tooltip {
   display: none;
-  position: absolute;
+  position: fixed;
   z-index: 100;
   max-width: 400px;
   padding: 4px 8px;

@@ -31,7 +31,7 @@ interface Props {
 }
 
 const props = defineProps<Props>();
-const { contentStyleFor } = useEditorZoom();
+const { contentStyleFor, handleWheel } = useEditorZoom();
 const editorContentStyle = computed(() => contentStyleFor(props.tab));
 
 const LARGE_DOCUMENT_CHAR_THRESHOLD = 200_000;
@@ -163,15 +163,36 @@ function scheduleNewlyLoadedCleanup() {
 
 // 更新滚动比例（rAF 节流）
 let scrollRafId: number | null = null;
+let zoomScrollRafId: number | null = null;
+
+function readScrollRatio(target: HTMLElement): number {
+  const scrollHeight = target.scrollHeight - target.clientHeight;
+  return scrollHeight === 0 ? 0 : target.scrollTop / scrollHeight;
+}
+
+function writeScrollRatio(target: HTMLElement, ratio: number) {
+  const scrollHeight = target.scrollHeight - target.clientHeight;
+  target.scrollTop = scrollHeight === 0 ? 0 : ratio * scrollHeight;
+}
+
 function updateScrollRatio(e: Event) {
   if (scrollRafId !== null) return;
   const target = e.target as HTMLElement;
   scrollRafId = requestAnimationFrame(() => {
     scrollRafId = null;
-    const scrollTop = target.scrollTop;
-    const scrollHeight = target.scrollHeight - target.clientHeight;
-    const ratio = scrollHeight === 0 ? 0 : scrollTop / scrollHeight;
-    props.tab.scrollRatio = ratio;
+    props.tab.scrollRatio = readScrollRatio(target);
+  });
+}
+
+/** 缩放会改变可视高度，等 DOM 更新完再按原比例还原，避免阅读位置跳动 */
+function restoreScrollRatio(ratio: number) {
+  if (zoomScrollRafId !== null) cancelAnimationFrame(zoomScrollRafId);
+  nextTick(() => {
+    zoomScrollRafId = requestAnimationFrame(() => {
+      zoomScrollRafId = null;
+      const scrollView = scrollViewRef.value;
+      if (scrollView) writeScrollRatio(scrollView, ratio);
+    });
   });
 }
 
@@ -333,10 +354,7 @@ function createEditorInstance() {
   // 恢复滚动位置
   nextTick(() => {
     if (scrollViewRef.value) {
-      const scrollRatio = props.tab.scrollRatio ?? 0;
-      const targetScrollTop =
-        scrollRatio * (scrollViewRef.value.scrollHeight - scrollViewRef.value.clientHeight);
-      scrollViewRef.value.scrollTop = targetScrollTop;
+      writeScrollRatio(scrollViewRef.value, props.tab.scrollRatio ?? 0);
     }
   });
 }
@@ -363,10 +381,7 @@ function syncEditorFromTab(content: string) {
 
       nextTick(() => {
         if (scrollViewRef.value) {
-          const scrollRatio = props.tab.scrollRatio ?? 0;
-          const targetScrollTop =
-            scrollRatio * (scrollViewRef.value.scrollHeight - scrollViewRef.value.clientHeight);
-          scrollViewRef.value.scrollTop = targetScrollTop;
+          writeScrollRatio(scrollViewRef.value, props.tab.scrollRatio ?? 0);
         }
       });
     } finally {
@@ -401,6 +416,7 @@ onUnmounted(() => {
   isEditorInitializing.value = false;
   if (newlyLoadedTimer) clearTimeout(newlyLoadedTimer);
   if (outlineTimer) clearTimeout(outlineTimer);
+  if (zoomScrollRafId !== null) cancelAnimationFrame(zoomScrollRafId);
   emitter.off("sourceView:toggle", handleSourceViewToggle);
   emitter.off("outline:scrollTo", handleOutlineScrollTo);
   emitter.off("editor:reload", handleEditorReload);
@@ -496,6 +512,15 @@ watch(
   }
 );
 
+// 缩放前后保持当前阅读位置
+watch(
+  () => props.tab.zoomPercent,
+  () => {
+    const scrollView = scrollViewRef.value;
+    if (scrollView) restoreScrollRatio(readScrollRatio(scrollView));
+  }
+);
+
 // 监听 tab.readOnly 变化
 watch(
   () => props.tab.readOnly,
@@ -537,7 +562,12 @@ defineExpose({
     :data-tab-id="tab.id"
     :data-active="isActive ? 'true' : 'false'"
   >
-    <div ref="scrollViewRef" class="scrollView milkup" @scroll="updateScrollRatio">
+    <div
+      ref="scrollViewRef"
+      class="scrollView milkup"
+      @scroll="updateScrollRatio"
+      @wheel="handleWheel"
+    >
       <div class="editor-zoom-surface" :style="editorContentStyle">
         <div ref="containerRef" class="milkup-container"></div>
       </div>
@@ -570,6 +600,12 @@ defineExpose({
     min-height: 100%;
     display: flex;
     flex-direction: column;
+
+    /* 编辑区辅助工具保持固定尺寸，不跟随内容缩放 */
+    :deep(.milkup-code-block-copy-btn),
+    :deep(.milkup-custom-select) {
+      zoom: var(--editor-zoom-inverse, 1);
+    }
   }
 
   .milkup-container {
