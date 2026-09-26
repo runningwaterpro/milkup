@@ -128,6 +128,31 @@ export const DEFAULT_SHORTCUTS: ShortcutDefinition[] = [
   },
   { id: "undo", label: "撤销", category: "editor", key: "Mod-z", defaultKey: "Mod-z" },
   { id: "redo", label: "重做", category: "editor", key: "Mod-y", defaultKey: "Mod-y" },
+
+  // 编辑区缩放。这三条在 action-commands 里没有对应 command，
+  // 因此不会进 ProseMirror keymap，由渲染进程的全局监听处理，
+  // 窗口有焦点即生效，不需要先点编辑区。
+  {
+    id: "zoomIn",
+    label: "放大",
+    category: "editor",
+    key: "Mod-Shift->",
+    defaultKey: "Mod-Shift->",
+  },
+  {
+    id: "zoomOut",
+    label: "缩小",
+    category: "editor",
+    key: "Mod-Shift-<",
+    defaultKey: "Mod-Shift-<",
+  },
+  {
+    id: "resetZoom",
+    label: "还原",
+    category: "editor",
+    key: "Mod-Shift-d",
+    defaultKey: "Mod-Shift-d",
+  },
 ];
 
 /** 分类中文名映射 */

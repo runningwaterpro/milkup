@@ -84,8 +84,9 @@ export function useShortcutConfig() {
   function updateShortcut(id: ShortcutActionId, newKey: string | null) {
     const current = { ...config.value.shortcuts };
     const def = DEFAULT_SHORTCUTS.find((d) => d.id === id);
-    // 如果和默认值相同，删除自定义项
-    if (def && newKey === def.defaultKey) {
+    // 和默认值相同就不留自定义项。按基础键比较，
+    // 否则录进来的 "Mod-Shift-)" 会被当成与默认的 "Mod-Shift-0" 不同而一直标为「已修改」。
+    if (def && newKey !== null && toBaseKey(newKey) === toBaseKey(def.defaultKey)) {
       delete current[id];
     } else {
       current[id] = newKey;
@@ -244,6 +245,37 @@ function keyEventToExactShortcutKey(
   return parts.join("-");
 }
 
+/**
+ * Shift 变体 → 基础键。主键比对前两边都归一化到这里，
+ * 这样存 "0" 或存 ")" 都能匹配 Ctrl+Shift+0（浏览器此时报 event.key = ")"）。
+ */
+const SHIFTED_TO_BASE: Record<string, string> = {
+  ")": "0",
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  _: "-",
+  "+": "=",
+  "{": "[",
+  "}": "]",
+  "|": "\\",
+  ":": ";",
+  '"': "'",
+  "<": ",",
+  ">": ".",
+  "?": "/",
+};
+
+function toBaseKey(key: string): string {
+  return SHIFTED_TO_BASE[key] ?? key.toLowerCase();
+}
+
 export function eventMatchesShortcutKey(
   event: KeyboardEvent,
   shortcutKey: string,
@@ -260,7 +292,7 @@ export function eventMatchesShortcutKey(
   if (options.ignoreMainKey) return true;
   if (!expectedMainKey) return false;
 
-  return normalizeKeyboardEventKey(event.key) === expectedMainKey;
+  return toBaseKey(normalizeKeyboardEventKey(event.key)) === toBaseKey(expectedMainKey);
 }
 
 function eventMatchesModifiers(event: KeyboardEvent, expectedModifiers: string[]): boolean {

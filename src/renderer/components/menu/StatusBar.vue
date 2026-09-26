@@ -2,7 +2,8 @@
 import { computed, ref } from "vue";
 import AppIcon from "@/renderer/components/ui/AppIcon.vue";
 import { toggleShowOutline } from "@/renderer/hooks/useOutline";
-import useEditorZoom from "@/renderer/hooks/useEditorZoom";
+import useEditorZoom, { installEditorZoomShortcuts } from "@/renderer/hooks/useEditorZoom";
+import { formatKeyForDisplay, useShortcutConfig } from "@/renderer/hooks/useShortcutConfig";
 import useSourceCode from "@/renderer/hooks/useSourceCode";
 
 const props = defineProps<{
@@ -16,9 +17,25 @@ const emit = defineEmits<{
 }>();
 
 const { isShowSource, toggleSourceCode } = useSourceCode();
-const { zoomPercent, canZoomOut, canZoomIn, canResetZoom, zoomOut, resetZoom, zoomIn } =
-  useEditorZoom();
+const { zoomPercent, canZoomOut, canZoomIn, zoomOut, resetZoom, zoomIn } = useEditorZoom();
 const mode = ref<"chars" | "lines">("chars");
+const { shortcuts } = useShortcutConfig();
+
+// 状态栏只在主编辑器窗口存在，由它注册缩放快捷键
+installEditorZoomShortcuts();
+
+// 提示读用户在设置里配置的绑定，改完立即同步
+const zoomShortcut = (id: "zoomIn" | "zoomOut" | "resetZoom") =>
+  shortcuts.value.find((s) => s.id === id)?.key || "";
+
+const zoomOutLabel = computed(
+  () => `缩小编辑区（${formatKeyForDisplay(zoomShortcut("zoomOut"))}）`
+);
+const zoomInLabel = computed(() => `放大编辑区（${formatKeyForDisplay(zoomShortcut("zoomIn"))}）`);
+const zoomValueLabel = computed(
+  () =>
+    `编辑区缩放 ${zoomPercent.value}%，点击还原（${formatKeyForDisplay(zoomShortcut("resetZoom"))}）`
+);
 
 const displayText = computed(() => {
   const text = props.content ?? "";
@@ -98,8 +115,8 @@ window.electronAPI.on("view:toggleView", () => {
       <div class="zoomControls" role="group" aria-label="编辑视图缩放">
         <button
           type="button"
-          aria-label="缩小编辑区"
-          title="缩小编辑区"
+          :aria-label="zoomOutLabel"
+          :title="zoomOutLabel"
           :disabled="!canZoomOut"
           @click="zoomOut"
         >
@@ -108,17 +125,16 @@ window.electronAPI.on("view:toggleView", () => {
         <button
           type="button"
           class="zoomValue"
-          :aria-label="`编辑区缩放 ${zoomPercent}%，点击还原`"
-          :title="`编辑区缩放 ${zoomPercent}%，点击还原`"
-          :disabled="!canResetZoom"
+          :aria-label="zoomValueLabel"
+          :title="zoomValueLabel"
           @click="resetZoom"
         >
           {{ zoomPercent }}%
         </button>
         <button
           type="button"
-          aria-label="放大编辑区"
-          title="放大编辑区"
+          :aria-label="zoomInLabel"
+          :title="zoomInLabel"
           :disabled="!canZoomIn"
           @click="zoomIn"
         >

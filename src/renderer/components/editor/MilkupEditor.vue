@@ -31,7 +31,7 @@ interface Props {
 }
 
 const props = defineProps<Props>();
-const { contentStyleFor } = useEditorZoom();
+const { contentStyleFor, handleWheel } = useEditorZoom();
 const editorContentStyle = computed(() => contentStyleFor(props.tab));
 
 const LARGE_DOCUMENT_CHAR_THRESHOLD = 200_000;
@@ -163,16 +163,80 @@ function scheduleNewlyLoadedCleanup() {
 
 // 更新滚动比例（rAF 节流）
 let scrollRafId: number | null = null;
+let zoomScrollRafId: number | null = null;
+
+function readScrollRatio(target: HTMLElement): number {
+  const scrollHeight = target.scrollHeight - target.clientHeight;
+  return scrollHeight === 0 ? 0 : target.scrollTop / scrollHeight;
+}
+
+function writeScrollRatio(target: HTMLElement, ratio: number) {
+  const scrollHeight = target.scrollHeight - target.clientHeight;
+  target.scrollTop = scrollHeight === 0 ? 0 : ratio * scrollHeight;
+}
+
 function updateScrollRatio(e: Event) {
   if (scrollRafId !== null) return;
   const target = e.target as HTMLElement;
   scrollRafId = requestAnimationFrame(() => {
     scrollRafId = null;
-    const scrollTop = target.scrollTop;
-    const scrollHeight = target.scrollHeight - target.clientHeight;
-    const ratio = scrollHeight === 0 ? 0 : scrollTop / scrollHeight;
-    props.tab.scrollRatio = ratio;
+    props.tab.scrollRatio = readScrollRatio(target);
   });
+}
+
+/**
+ * 缩放前记下阅读锚点。
+ * offset 是选区距视口顶部的像素；拿不到就退回到文档比例。
+ * 按文档比例还原会随倍率放大误差：长文档缩到 300% 时能差出好几屏。
+ */
+function captureZoomAnchor() {
+  const scrollView = scrollViewRef.value;
+  if (!scrollView) return null;
+
+  const ratio = readScrollRatio(scrollView);
+  if (!editor) return { offset: null, ratio };
+
+  try {
+    const { top } = editor.view.coordsAtPos(editor.view.state.selection.from);
+    const rect = scrollView.getBoundingClientRect();
+    // 选区本来就不在视口内时不干预，避免把用户拉走
+    return { offset: top > rect.top && top < rect.bottom ? top - rect.top : null, ratio };
+  } catch {
+    return { offset: null, ratio };
+  }
+}
+
+/** 把锚点补偿落实到当前滚动位置 */
+function applyZoomAnchor(anchor: ReturnType<typeof captureZoomAnchor>) {
+  const scrollView = scrollViewRef.value;
+  if (!scrollView || !anchor) return;
+
+  if (anchor.offset === null || !editor) {
+    writeScrollRatio(scrollView, anchor.ratio);
+    return;
+  }
+  try {
+    const { top } = editor.view.coordsAtPos(editor.view.state.selection.from);
+    scrollView.scrollTop += top - scrollView.getBoundingClientRect().top - anchor.offset;
+  } catch {
+    writeScrollRatio(scrollView, anchor.ratio);
+  }
+}
+
+// 尚未补偿的锚点。滚轮和连按会连续触发 watch，
+// 上一轮的补偿可能还挂在 rAF 上（此时 DOM 已更新、滚动还没跟上）。
+type ZoomAnchor = ReturnType<typeof captureZoomAnchor>;
+let pendingZoomAnchor: ZoomAnchor = null;
+
+/** 立刻落实待补偿的锚点。必须在捕获新锚点之前调用，否则捕获到的是错乱状态 */
+function flushZoomAnchor() {
+  if (zoomScrollRafId !== null) {
+    cancelAnimationFrame(zoomScrollRafId);
+    zoomScrollRafId = null;
+  }
+  const anchor = pendingZoomAnchor;
+  pendingZoomAnchor = null;
+  applyZoomAnchor(anchor);
 }
 
 // 预处理内容（主进程已完成图片路径转换，这里仅处理空格编码供编辑器渲染）
@@ -333,10 +397,7 @@ function createEditorInstance() {
   // 恢复滚动位置
   nextTick(() => {
     if (scrollViewRef.value) {
-      const scrollRatio = props.tab.scrollRatio ?? 0;
-      const targetScrollTop =
-        scrollRatio * (scrollViewRef.value.scrollHeight - scrollViewRef.value.clientHeight);
-      scrollViewRef.value.scrollTop = targetScrollTop;
+      writeScrollRatio(scrollViewRef.value, props.tab.scrollRatio ?? 0);
     }
   });
 }
@@ -363,10 +424,7 @@ function syncEditorFromTab(content: string) {
 
       nextTick(() => {
         if (scrollViewRef.value) {
-          const scrollRatio = props.tab.scrollRatio ?? 0;
-          const targetScrollTop =
-            scrollRatio * (scrollViewRef.value.scrollHeight - scrollViewRef.value.clientHeight);
-          scrollViewRef.value.scrollTop = targetScrollTop;
+          writeScrollRatio(scrollViewRef.value, props.tab.scrollRatio ?? 0);
         }
       });
     } finally {
@@ -401,6 +459,8 @@ onUnmounted(() => {
   isEditorInitializing.value = false;
   if (newlyLoadedTimer) clearTimeout(newlyLoadedTimer);
   if (outlineTimer) clearTimeout(outlineTimer);
+  if (zoomScrollRafId !== null) cancelAnimationFrame(zoomScrollRafId);
+  pendingZoomAnchor = null;
   emitter.off("sourceView:toggle", handleSourceViewToggle);
   emitter.off("outline:scrollTo", handleOutlineScrollTo);
   emitter.off("editor:reload", handleEditorReload);
@@ -496,6 +556,28 @@ watch(
   }
 );
 
+// 缩放前后保持当前阅读位置
+watch(
+  () => props.tab.zoomPercent,
+  () => {
+    // watch 是 pre-flush，此刻 DOM 还是上一次的倍率，先把上一轮补偿结清
+    flushZoomAnchor();
+    pendingZoomAnchor = captureZoomAnchor();
+    const anchor = pendingZoomAnchor;
+
+    // 等 Vue patch 完样式、布局稳定后再补偿
+    nextTick(() => {
+      zoomScrollRafId = requestAnimationFrame(() => {
+        zoomScrollRafId = null;
+        if (pendingZoomAnchor === anchor) {
+          pendingZoomAnchor = null;
+          applyZoomAnchor(anchor);
+        }
+      });
+    });
+  }
+);
+
 // 监听 tab.readOnly 变化
 watch(
   () => props.tab.readOnly,
@@ -537,7 +619,12 @@ defineExpose({
     :data-tab-id="tab.id"
     :data-active="isActive ? 'true' : 'false'"
   >
-    <div ref="scrollViewRef" class="scrollView milkup" @scroll="updateScrollRatio">
+    <div
+      ref="scrollViewRef"
+      class="scrollView milkup"
+      @scroll="updateScrollRatio"
+      @wheel="handleWheel"
+    >
       <div class="editor-zoom-surface" :style="editorContentStyle">
         <div ref="containerRef" class="milkup-container"></div>
       </div>
@@ -570,6 +657,12 @@ defineExpose({
     min-height: 100%;
     display: flex;
     flex-direction: column;
+
+    /* 编辑区辅助工具保持固定尺寸，不跟随内容缩放 */
+    :deep(.milkup-code-block-copy-btn),
+    :deep(.milkup-custom-select) {
+      zoom: var(--editor-zoom-inverse, 1);
+    }
   }
 
   .milkup-container {

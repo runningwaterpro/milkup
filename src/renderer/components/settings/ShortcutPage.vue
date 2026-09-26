@@ -7,7 +7,7 @@ import {
   keyEventToShortcutKey,
 } from "@/renderer/hooks/useShortcutConfig";
 import AppIcon from "@/renderer/components/ui/AppIcon.vue";
-import type { ShortcutActionId, ShortcutCategory } from "@/core";
+import type { ShortcutActionId, ShortcutCategory, ShortcutDefinition } from "@/core";
 
 const {
   shortcuts,
@@ -28,6 +28,46 @@ const keySearchDisplay = ref("");
 // 录制状态
 const recordingId = ref<ShortcutActionId | null>(null);
 const recordingKey = ref("");
+
+function stopRecording() {
+  recordingId.value = null;
+  recordingKey.value = "";
+}
+
+/** 进入录制：点击后焦点应落在 badge 上，后续 keydown 才能被 @keydown 收到 */
+function startRecording(s: ShortcutDefinition) {
+  recordingId.value = s.id;
+  recordingKey.value = "";
+}
+
+/**
+ * 录制快捷键。
+ *
+ * 这里不能用 @keydown.prevent：Windows 上拦掉 Control / Shift 的 keydown 会
+ * 连带阻止后续字符 keydown 的产生，于是 Ctrl+Shift+0 只收到前两个事件，
+ * 录不进主键。改为只在真正决定结果时（录成、清除、取消）才阻止默认。
+ */
+function handleRecordKeydown(e: KeyboardEvent, s: ShortcutDefinition) {
+  if (recordingId.value !== s.id) return;
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    stopRecording();
+    return;
+  }
+  if (e.key === "Backspace" || e.key === "Delete") {
+    e.preventDefault();
+    clearShortcut(s.id);
+    stopRecording();
+    return;
+  }
+
+  const key = keyEventToShortcutKey(e, s);
+  if (!key) return;
+  e.preventDefault();
+  updateShortcut(s.id, key);
+  stopRecording();
+}
 
 // 分类折叠状态
 const expandedCategories = ref<Set<ShortcutCategory>>(
@@ -147,32 +187,8 @@ function toggleCategory(cat: ShortcutCategory) {
                     modified: s.key !== s.defaultKey,
                   }"
                   tabindex="0"
-                  @click="
-                    recordingId = s.id;
-                    recordingKey = '';
-                  "
-                  @keydown.prevent="
-                    (e: KeyboardEvent) => {
-                      if (recordingId !== s.id) return;
-                      if (e.key === 'Escape') {
-                        recordingId = null;
-                        recordingKey = '';
-                        return;
-                      }
-                      if (e.key === 'Backspace' || e.key === 'Delete') {
-                        clearShortcut(s.id);
-                        recordingId = null;
-                        recordingKey = '';
-                        return;
-                      }
-                      const k = keyEventToShortcutKey(e, s);
-                      if (k) {
-                        updateShortcut(s.id, k);
-                        recordingId = null;
-                        recordingKey = '';
-                      }
-                    }
-                  "
+                  @click="startRecording(s)"
+                  @keydown="handleRecordKeydown($event, s)"
                   @blur="
                     recordingId = null;
                     recordingKey = '';
