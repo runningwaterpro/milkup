@@ -130,7 +130,7 @@ test("editor zoom stays isolated per tab without changing document state", () =>
     true
   );
   const wheel = createWheel({ ctrlKey: true });
-  assert.equal(controller.handleWheel(wheel.event, 2_000), false);
+  assert.equal(controller.handleWheel(wheel.event), false);
   assert.equal(wheel.prevented, 0);
   assert.equal(firstTab.zoomPercent, 110);
 });
@@ -182,26 +182,48 @@ test("keyboard shortcuts zoom the active tab with platform modifiers", () => {
   assert.equal(controller.zoomPercent.value, 100);
 });
 
-test("a continuous modified-wheel gesture moves exactly one step", () => {
+test("modified wheel zooms linearly by accumulated scroll delta", () => {
   const activeTab = ref(createTab());
   const controller = createEditorZoomController(activeTab);
 
-  // 触控板捏合：2 秒内 40 个高频事件，全程只走一个档位
-  let t = 1_000;
-  for (let i = 0; i < 40; i += 1) {
-    const wheel = createWheel({ ctrlKey: true });
-    assert.equal(controller.handleWheel(wheel.event, t), true);
-    // 页面缩放必须被拦掉，即使这次不调整倍率
-    assert.equal(wheel.prevented, 1);
-    assert.equal(wheel.stopped, 1);
-    t += 50;
+  // 触控板小增量：累积不够一整格就不动，避免瞬间跳到边界
+  for (let i = 0; i < 9; i += 1) {
+    const w = createWheel({ ctrlKey: true, deltaY: -10 });
+    assert.equal(controller.handleWheel(w.event), true);
+    // 每一帧都必须拦住 Chromium 的整页缩放
+    assert.equal(w.prevented, 1);
+    assert.equal(w.stopped, 1);
   }
+  assert.equal(controller.zoomPercent.value, 100);
+
+  // 累积到一整格（100）就走一档
+  const tenth = createWheel({ ctrlKey: true, deltaY: -10 });
+  assert.equal(controller.handleWheel(tenth.event), true);
   assert.equal(controller.zoomPercent.value, 110);
 
-  // 静默超过一个空闲间隔后，下一次捏合重新算一次手势
-  const next = createWheel({ ctrlKey: true });
-  assert.equal(controller.handleWheel(next.event, t + 400), true);
-  assert.equal(controller.zoomPercent.value, 120);
+  // 持续滚动持续缩放，没有停顿感
+  for (let i = 0; i < 5; i += 1) {
+    controller.handleWheel(createWheel({ ctrlKey: true, deltaY: -100 }).event);
+  }
+  assert.equal(controller.zoomPercent.value, 160);
+
+  // 一次大增量直接跨多档
+  const big = createWheel({ ctrlKey: true, deltaY: -250 });
+  assert.equal(controller.handleWheel(big.event), true);
+  assert.equal(controller.zoomPercent.value, 180);
+
+  // 反向滚动立刻生效，不被上一步的余量拖住
+  const down = createWheel({ ctrlKey: true, deltaY: 100 });
+  assert.equal(controller.handleWheel(down.event), true);
+  assert.equal(controller.zoomPercent.value, 170);
+
+  // 未到反向一整格前不动作
+  for (let i = 0; i < 5; i += 1) {
+    controller.handleWheel(createWheel({ ctrlKey: true, deltaY: 10 }).event);
+  }
+  assert.equal(controller.zoomPercent.value, 170);
+  controller.handleWheel(createWheel({ ctrlKey: true, deltaY: 50 }).event);
+  assert.equal(controller.zoomPercent.value, 160);
 });
 
 test("plain wheel scrolling is left alone", () => {
@@ -209,19 +231,13 @@ test("plain wheel scrolling is left alone", () => {
   const controller = createEditorZoomController(activeTab);
 
   const plain = createWheel();
-  assert.equal(controller.handleWheel(plain.event, 1_000), false);
+  assert.equal(controller.handleWheel(plain.event), false);
   assert.equal(plain.prevented, 0);
   assert.equal(controller.zoomPercent.value, 100);
 
-  // 反向滚轮缩小
-  const zoomOutWheel = createWheel({ ctrlKey: true, deltaY: 1 });
-  assert.equal(controller.handleWheel(zoomOutWheel.event, 1_400), true);
-  assert.equal(controller.zoomPercent.value, 90);
-
-  // deltaY 为 0 不处理
   const still = createWheel({ ctrlKey: true, deltaY: 0 });
-  assert.equal(controller.handleWheel(still.event, 1_800), false);
-  assert.equal(controller.zoomPercent.value, 90);
+  assert.equal(controller.handleWheel(still.event), false);
+  assert.equal(controller.zoomPercent.value, 100);
 });
 
 test("editor shortcuts reserve Ctrl+0 for zoom reset", () => {

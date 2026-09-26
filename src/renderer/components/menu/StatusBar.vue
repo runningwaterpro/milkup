@@ -17,8 +17,7 @@ const emit = defineEmits<{
 }>();
 
 const { isShowSource, toggleSourceCode } = useSourceCode();
-const { zoomPercent, canZoomOut, canZoomIn, canResetZoom, zoomOut, resetZoom, zoomIn } =
-  useEditorZoom();
+const { zoomPercent, canZoomOut, canZoomIn, zoomOut, resetZoom, zoomIn } = useEditorZoom();
 const mode = ref<"chars" | "lines">("chars");
 
 // 状态栏只在主编辑器窗口存在，由它注册缩放快捷键
@@ -120,7 +119,6 @@ window.electronAPI.on("view:toggleView", () => {
           class="zoomValue"
           :aria-label="zoomValueLabel"
           :title="zoomValueLabel"
-          :disabled="!canResetZoom"
           @click="resetZoom"
         >
           {{ zoomPercent }}%
