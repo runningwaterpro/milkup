@@ -184,14 +184,49 @@ function updateScrollRatio(e: Event) {
   });
 }
 
-/** 缩放会改变可视高度，等 DOM 更新完再按原比例还原，避免阅读位置跳动 */
-function restoreScrollRatio(ratio: number) {
+/**
+ * 缩放前记下阅读锚点。
+ * offset 是选区距视口顶部的像素；拿不到就退回到文档比例。
+ * 按文档比例还原会随倍率放大误差：长文档缩到 300% 时能差出好几屏。
+ */
+function captureZoomAnchor() {
+  const scrollView = scrollViewRef.value;
+  if (!scrollView) return null;
+
+  const ratio = readScrollRatio(scrollView);
+  if (!editor) return { offset: null, ratio };
+
+  try {
+    const { top } = editor.view.coordsAtPos(editor.view.state.selection.from);
+    const rect = scrollView.getBoundingClientRect();
+    // 选区本来就不在视口内时不干预，避免把用户拉走
+    return { offset: top > rect.top && top < rect.bottom ? top - rect.top : null, ratio };
+  } catch {
+    return { offset: null, ratio };
+  }
+}
+
+/** 等 DOM 更新完再把选区钉回原来的像素位置 */
+function restoreZoomAnchor(anchor: ReturnType<typeof captureZoomAnchor>) {
+  if (!anchor) return;
   if (zoomScrollRafId !== null) cancelAnimationFrame(zoomScrollRafId);
+
   nextTick(() => {
     zoomScrollRafId = requestAnimationFrame(() => {
       zoomScrollRafId = null;
       const scrollView = scrollViewRef.value;
-      if (scrollView) writeScrollRatio(scrollView, ratio);
+      if (!scrollView) return;
+
+      if (anchor.offset === null || !editor) {
+        writeScrollRatio(scrollView, anchor.ratio);
+        return;
+      }
+      try {
+        const { top } = editor.view.coordsAtPos(editor.view.state.selection.from);
+        scrollView.scrollTop += top - scrollView.getBoundingClientRect().top - anchor.offset;
+      } catch {
+        writeScrollRatio(scrollView, anchor.ratio);
+      }
     });
   });
 }
@@ -515,10 +550,7 @@ watch(
 // 缩放前后保持当前阅读位置
 watch(
   () => props.tab.zoomPercent,
-  () => {
-    const scrollView = scrollViewRef.value;
-    if (scrollView) restoreScrollRatio(readScrollRatio(scrollView));
-  }
+  () => restoreZoomAnchor(captureZoomAnchor())
 );
 
 // 监听 tab.readOnly 变化
