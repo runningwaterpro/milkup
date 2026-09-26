@@ -84,8 +84,9 @@ export function useShortcutConfig() {
   function updateShortcut(id: ShortcutActionId, newKey: string | null) {
     const current = { ...config.value.shortcuts };
     const def = DEFAULT_SHORTCUTS.find((d) => d.id === id);
-    // 如果和默认值相同，删除自定义项
-    if (def && newKey === def.defaultKey) {
+    // 和默认值相同就不留自定义项。按基础键比较，
+    // 否则录进来的 "Mod-Shift-)" 会被当成与默认的 "Mod-Shift-0" 不同而一直标为「已修改」。
+    if (def && newKey !== null && toBaseKey(newKey) === toBaseKey(def.defaultKey)) {
       delete current[id];
     } else {
       current[id] = newKey;
