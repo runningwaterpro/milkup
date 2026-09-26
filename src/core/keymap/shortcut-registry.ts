@@ -38,13 +38,7 @@ export const DEFAULT_SHORTCUTS: ShortcutDefinition[] = [
   { id: "setHeading4", label: "四级标题", category: "block", key: "Mod-4", defaultKey: "Mod-4" },
   { id: "setHeading5", label: "五级标题", category: "block", key: "Mod-5", defaultKey: "Mod-5" },
   { id: "setHeading6", label: "六级标题", category: "block", key: "Mod-6", defaultKey: "Mod-6" },
-  {
-    id: "setParagraph",
-    label: "段落",
-    category: "block",
-    key: "Mod-Shift-0",
-    defaultKey: "Mod-Shift-0",
-  },
+  { id: "setParagraph", label: "段落", category: "block", key: "Mod-0", defaultKey: "Mod-0" },
   {
     id: "setCodeBlock",
     label: "代码块",

@@ -47,23 +47,28 @@ export function createEditorZoomController(activeTab: Readonly<Ref<Tab | null>>)
     setZoomPercent(DEFAULT_ZOOM_PERCENT);
   }
 
+  /**
+   * 匹配物理键位而不是 event.key。
+   * Ctrl/Cmd + Shift + 0 产生的 key 是 ")"，+ Shift + - 产生的是 "_"，
+   * 用 key 匹配不到用户实际按的键；code 不受 Shift 影响，也跨键盘布局稳定。
+   */
   function handleKeydown(event: KeyboardEvent, isMac: boolean): boolean {
     const hasModifier = isMac ? event.metaKey : event.ctrlKey;
-    if (!hasModifier || event.altKey) return false;
+    if (!hasModifier || event.altKey || !event.shiftKey) return false;
 
-    if (event.key === "=" || event.key === "+") {
-      zoomIn();
-      return true;
+    switch (event.code) {
+      case "Equal":
+        zoomIn();
+        return true;
+      case "Minus":
+        zoomOut();
+        return true;
+      case "Digit0":
+        resetZoom();
+        return true;
+      default:
+        return false;
     }
-    if (event.key === "-") {
-      zoomOut();
-      return true;
-    }
-    if (event.key === "0") {
-      resetZoom();
-      return true;
-    }
-    return false;
   }
 
   let wheelAccumulator = 0;

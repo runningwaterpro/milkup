@@ -126,7 +126,10 @@ test("editor zoom stays isolated per tab without changing document state", () =>
   assert.equal(controller.canZoomIn.value, false);
   assert.equal(firstTab.zoomPercent, 110);
   assert.equal(
-    controller.handleKeydown({ key: "=", ctrlKey: true, metaKey: false, altKey: false }, false),
+    controller.handleKeydown(
+      { code: "Equal", key: "=", ctrlKey: true, metaKey: false, altKey: false, shiftKey: true },
+      false
+    ),
     true
   );
   const wheel = createWheel({ ctrlKey: true });
@@ -149,37 +152,71 @@ test("read-only documents can be zoomed and stay read-only", () => {
   assert.equal(tab.originalContent, "# Note");
 });
 
-test("keyboard shortcuts zoom the active tab with platform modifiers", () => {
+test("keyboard shortcuts zoom the active tab via physical key codes", () => {
   const activeTab = ref(createTab());
   const controller = createEditorZoomController(activeTab);
+  // Shift 让 +0 变成 ")"、+- 变成 "_"，只能靠物理键位 code 匹配
   const event = (overrides) => ({
+    code: "Equal",
     key: "=",
     ctrlKey: false,
     metaKey: false,
     altKey: false,
+    shiftKey: true,
     ...overrides,
   });
 
   assert.equal(controller.handleKeydown(event({ ctrlKey: true }), false), true);
   assert.equal(controller.zoomPercent.value, 110);
-  assert.equal(controller.handleKeydown(event({ key: "+", ctrlKey: true }), false), true);
+  assert.equal(
+    controller.handleKeydown(event({ ctrlKey: true, code: "Equal", key: "+" }), false),
+    true
+  );
   assert.equal(controller.zoomPercent.value, 120);
-  assert.equal(controller.handleKeydown(event({ key: "-", ctrlKey: true }), false), true);
+  assert.equal(
+    controller.handleKeydown(event({ ctrlKey: true, code: "Minus", key: "-" }), false),
+    true
+  );
   assert.equal(controller.zoomPercent.value, 110);
-  assert.equal(controller.handleKeydown(event({ key: "0", ctrlKey: true }), false), true);
+  assert.equal(
+    controller.handleKeydown(event({ ctrlKey: true, code: "Digit0", key: ")" }), false),
+    true
+  );
   assert.equal(controller.zoomPercent.value, 100);
 
   // Mac 用 Cmd，Windows/Linux 用 Ctrl
-  assert.equal(controller.handleKeydown(event({ key: "0", ctrlKey: true }), true), false);
-  assert.equal(controller.handleKeydown(event({ key: "0", metaKey: true }), true), true);
+  assert.equal(controller.handleKeydown(event({ ctrlKey: true }), true), false);
   assert.equal(controller.zoomPercent.value, 100);
-  // Alt 和无修饰键不抢
+  assert.equal(controller.handleKeydown(event({ metaKey: true }), true), true);
+  assert.equal(controller.zoomPercent.value, 110);
+  assert.equal(controller.handleKeydown(event({ metaKey: true, code: "Digit0" }), true), true);
+  assert.equal(controller.zoomPercent.value, 100);
+
+  // 不带 Shift 的 Ctrl+0 属于「设为段落」，不抢；Alt 和其他键也不抢
   assert.equal(
-    controller.handleKeydown(event({ key: "=", altKey: true, ctrlKey: true }), false),
+    controller.handleKeydown(
+      event({ ctrlKey: true, code: "Digit0", key: "0", shiftKey: false }),
+      false
+    ),
     false
   );
-  assert.equal(controller.handleKeydown(event({ key: "=" }), false), false);
+  assert.equal(
+    controller.handleKeydown(event({ ctrlKey: true, code: "Equal", shiftKey: false }), false),
+    false
+  );
+  assert.equal(controller.handleKeydown(event({ ctrlKey: true, altKey: true }), false), false);
+  assert.equal(controller.handleKeydown(event({ ctrlKey: true, code: "KeyB" }), false), false);
   assert.equal(controller.zoomPercent.value, 100);
+});
+
+test("缩放快捷键不占用「设为段落」的 Ctrl+0", () => {
+  // 上游把 Mod-0 给了「设为段落」，缩放让开到 Mod-Shift-0
+  const setParagraph = DEFAULT_SHORTCUTS.find((s) => s.id === "setParagraph");
+  assert.equal(setParagraph?.defaultKey, "Mod-0");
+  assert.equal(
+    DEFAULT_SHORTCUTS.some((s) => s.defaultKey === "Mod-Shift-0"),
+    false
+  );
 });
 
 test("modified wheel zooms linearly by accumulated scroll delta", () => {
@@ -238,15 +275,4 @@ test("plain wheel scrolling is left alone", () => {
   const still = createWheel({ ctrlKey: true, deltaY: 0 });
   assert.equal(controller.handleWheel(still.event), false);
   assert.equal(controller.zoomPercent.value, 100);
-});
-
-test("editor shortcuts reserve Ctrl+0 for zoom reset", () => {
-  assert.equal(
-    DEFAULT_SHORTCUTS.some((shortcut) => shortcut.defaultKey === "Mod-0"),
-    false
-  );
-  assert.equal(
-    DEFAULT_SHORTCUTS.find((shortcut) => shortcut.id === "setParagraph")?.defaultKey,
-    "Mod-Shift-0"
-  );
 });

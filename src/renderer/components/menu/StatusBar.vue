@@ -23,10 +23,10 @@ const mode = ref<"chars" | "lines">("chars");
 // 状态栏只在主编辑器窗口存在，由它注册缩放快捷键
 installEditorZoomShortcuts();
 
-const zoomOutLabel = computed(() => `缩小编辑区（${formatKeyForDisplay("Mod-minus")}）`);
-const zoomInLabel = computed(() => `放大编辑区（${formatKeyForDisplay("Mod-=")}）`);
+const zoomOutLabel = computed(() => `缩小编辑区（${formatKeyForDisplay("Mod-Shift-minus")}）`);
+const zoomInLabel = computed(() => `放大编辑区（${formatKeyForDisplay("Mod-Shift-=")}）`);
 const zoomValueLabel = computed(
-  () => `编辑区缩放 ${zoomPercent.value}%，点击还原（${formatKeyForDisplay("Mod-0")}）`
+  () => `编辑区缩放 ${zoomPercent.value}%，点击还原（${formatKeyForDisplay("Mod-Shift-0")}）`
 );
 
 const displayText = computed(() => {
