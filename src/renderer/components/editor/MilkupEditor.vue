@@ -206,29 +206,37 @@ function captureZoomAnchor() {
   }
 }
 
-/** 等 DOM 更新完再把选区钉回原来的像素位置 */
-function restoreZoomAnchor(anchor: ReturnType<typeof captureZoomAnchor>) {
-  if (!anchor) return;
-  if (zoomScrollRafId !== null) cancelAnimationFrame(zoomScrollRafId);
+/** 把锚点补偿落实到当前滚动位置 */
+function applyZoomAnchor(anchor: ReturnType<typeof captureZoomAnchor>) {
+  const scrollView = scrollViewRef.value;
+  if (!scrollView || !anchor) return;
 
-  nextTick(() => {
-    zoomScrollRafId = requestAnimationFrame(() => {
-      zoomScrollRafId = null;
-      const scrollView = scrollViewRef.value;
-      if (!scrollView) return;
+  if (anchor.offset === null || !editor) {
+    writeScrollRatio(scrollView, anchor.ratio);
+    return;
+  }
+  try {
+    const { top } = editor.view.coordsAtPos(editor.view.state.selection.from);
+    scrollView.scrollTop += top - scrollView.getBoundingClientRect().top - anchor.offset;
+  } catch {
+    writeScrollRatio(scrollView, anchor.ratio);
+  }
+}
 
-      if (anchor.offset === null || !editor) {
-        writeScrollRatio(scrollView, anchor.ratio);
-        return;
-      }
-      try {
-        const { top } = editor.view.coordsAtPos(editor.view.state.selection.from);
-        scrollView.scrollTop += top - scrollView.getBoundingClientRect().top - anchor.offset;
-      } catch {
-        writeScrollRatio(scrollView, anchor.ratio);
-      }
-    });
-  });
+// 尚未补偿的锚点。滚轮和连按会连续触发 watch，
+// 上一轮的补偿可能还挂在 rAF 上（此时 DOM 已更新、滚动还没跟上）。
+type ZoomAnchor = ReturnType<typeof captureZoomAnchor>;
+let pendingZoomAnchor: ZoomAnchor = null;
+
+/** 立刻落实待补偿的锚点。必须在捕获新锚点之前调用，否则捕获到的是错乱状态 */
+function flushZoomAnchor() {
+  if (zoomScrollRafId !== null) {
+    cancelAnimationFrame(zoomScrollRafId);
+    zoomScrollRafId = null;
+  }
+  const anchor = pendingZoomAnchor;
+  pendingZoomAnchor = null;
+  applyZoomAnchor(anchor);
 }
 
 // 预处理内容（主进程已完成图片路径转换，这里仅处理空格编码供编辑器渲染）
@@ -452,6 +460,7 @@ onUnmounted(() => {
   if (newlyLoadedTimer) clearTimeout(newlyLoadedTimer);
   if (outlineTimer) clearTimeout(outlineTimer);
   if (zoomScrollRafId !== null) cancelAnimationFrame(zoomScrollRafId);
+  pendingZoomAnchor = null;
   emitter.off("sourceView:toggle", handleSourceViewToggle);
   emitter.off("outline:scrollTo", handleOutlineScrollTo);
   emitter.off("editor:reload", handleEditorReload);
@@ -550,7 +559,23 @@ watch(
 // 缩放前后保持当前阅读位置
 watch(
   () => props.tab.zoomPercent,
-  () => restoreZoomAnchor(captureZoomAnchor())
+  () => {
+    // watch 是 pre-flush，此刻 DOM 还是上一次的倍率，先把上一轮补偿结清
+    flushZoomAnchor();
+    pendingZoomAnchor = captureZoomAnchor();
+    const anchor = pendingZoomAnchor;
+
+    // 等 Vue patch 完样式、布局稳定后再补偿
+    nextTick(() => {
+      zoomScrollRafId = requestAnimationFrame(() => {
+        zoomScrollRafId = null;
+        if (pendingZoomAnchor === anchor) {
+          pendingZoomAnchor = null;
+          applyZoomAnchor(anchor);
+        }
+      });
+    });
+  }
 );
 
 // 监听 tab.readOnly 变化
