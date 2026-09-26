@@ -34,6 +34,12 @@ function stopRecording() {
   recordingKey.value = "";
 }
 
+/** 进入录制：点击后焦点应落在 badge 上，后续 keydown 才能被 @keydown 收到 */
+function startRecording(s: ShortcutDefinition) {
+  recordingId.value = s.id;
+  recordingKey.value = "";
+}
+
 /**
  * 录制快捷键。
  *
@@ -181,10 +187,7 @@ function toggleCategory(cat: ShortcutCategory) {
                     modified: s.key !== s.defaultKey,
                   }"
                   tabindex="0"
-                  @click="
-                    recordingId = s.id;
-                    recordingKey = '';
-                  "
+                  @click="startRecording(s)"
                   @keydown="handleRecordKeydown($event, s)"
                   @blur="
                     recordingId = null;

@@ -273,7 +273,7 @@ const SHIFTED_TO_BASE: Record<string, string> = {
 };
 
 function toBaseKey(key: string): string {
-  return SHIFTED_TO_BASE[key] ?? key;
+  return SHIFTED_TO_BASE[key] ?? key.toLowerCase();
 }
 
 export function eventMatchesShortcutKey(

@@ -66,7 +66,11 @@ export default function createMenu() {
     {
       label: "视图",
       submenu: [
-        { label: "实际大小", accelerator: "CmdOrCtrl+0", role: "resetZoom" },
+        // 原先这里有「实际大小」role: "resetZoom" + CmdOrCtrl+0。
+        // role 由 Electron 在主进程直接执行，渲染进程收不到按键，
+        // 会静默吞掉 Ctrl+Shift+0（Electron 的 accelerator 匹配容忍额外 Shift）。
+        // 它的作用只是重置 Chromium 页面缩放，与编辑区缩放无关，
+        // 而且无边框窗口里这一项没有任何可见入口。
         { label: "全屏", accelerator: "F11", role: "togglefullscreen" },
         {
           label: "切换视图",
