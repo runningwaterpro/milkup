@@ -93,6 +93,8 @@ async function createWindow() {
     win.webContents.openDevTools();
   }
 
+  win.maximize();
+
   // macOS: 窗口关闭时如果不是退出流程且不是主动关闭，只隐藏而不关闭
   win.on("close", (event) => {
     if (process.platform === "darwin" && !getIsQuitting() && !isWindowClosing(win!.id)) {
