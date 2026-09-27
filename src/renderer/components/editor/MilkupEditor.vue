@@ -305,6 +305,7 @@ function emitOutlineUpdate() {
 
 function createEditorInstance() {
   if (!containerRef.value) return;
+  benchMark("r-editor-create-enter", { contentChars: props.tab.content?.length ?? 0, isActive: props.isActive }); // PROTOTYPE BENCH
 
   // 设置全局文件路径供插件使用
   if (props.isActive) {
@@ -409,6 +410,7 @@ function createEditorInstance() {
       writeScrollRatio(scrollViewRef.value, props.tab.scrollRatio ?? 0);
     }
   });
+  benchMark("r-editor-create-exit", { contentChars: props.tab.content?.length ?? 0 }); // PROTOTYPE BENCH
 }
 
 function syncEditorFromTab(content: string) {
@@ -447,10 +449,13 @@ function syncEditorFromTab(content: string) {
 
 onMounted(async () => {
   if (!containerRef.value) return;
+  benchMark("r-editor-mounted-begin", { isActive: props.isActive, contentChars: props.tab.content?.length ?? 0 }); // PROTOTYPE BENCH
   await nextTick();
+  benchMark("r-editor-mounted-after-tick", { isLargeDocument: isLargeDocument.value }); // PROTOTYPE BENCH
   if (isLargeDocument.value && props.isActive) {
     isEditorInitializing.value = true;
     await nextFrame();
+    benchMark("r-editor-large-doc-frame-done"); // PROTOTYPE BENCH
   }
   try {
     createEditorInstance();

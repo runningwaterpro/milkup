@@ -38,7 +38,12 @@ function wallNow(): number {
 }
 
 const marks: Record<string, number> = {};
+const events: Array<{ name: string; t: number; detail?: unknown }> = [];
 const info: Record<string, unknown> = { runId: benchRunId };
+/** 每次换文档 performance.timeOrigin 都会变，主进程用它区分「第几轮窗口」 */
+const sessionId = performance.timeOrigin;
+info.session = sessionId;
+info.events = events;
 let finished = false;
 
 // ── 场景状态注入 ───────────────────────────────────────────────────────────
@@ -63,7 +68,7 @@ function pushState(extra?: Record<string, unknown>): void {
   if (!benchActive || finished) return;
   try {
     Object.assign(info, extra);
-    (globalThis as any).electronAPI.__benchPush({ marks, info });
+    (globalThis as any).electronAPI.__benchPush({ marks, info, session: sessionId });
   } catch {
     /* 基准数据回传失败不能影响应用 */
   }
@@ -76,10 +81,19 @@ function pushState(extra?: Record<string, unknown>): void {
  */
 export function benchMark(name: string, note?: unknown): void {
   if (!benchActive) return;
-  marks[name] = wallNow();
+  const now = wallNow();
+  marks[name] = now;
+  // events 是全量有序流水（同名打点会被 marks 覆盖，events 不会），阶段拆解用它
+  events.push(note === undefined ? { name, t: now } : { name, t: now, detail: note });
   pushState(note === undefined ? undefined : { [name + "Note"]: note });
   checkStableReady();
 }
+
+// ===== PROTOTYPE BENCH (阶段 2：让 src/core 能在不打 import 的前提下打点) =====
+// 故意不在 editor.ts 里 import 本模块：加 import 会动模块图求值顺序，
+// 而模块求值时间正是要测的东西。改成挂一个全局函数，core 只管调用。
+(globalThis as any).__benchMark = (name: string, note?: unknown) => benchMark(name, note);
+// ===== /PROTOTYPE BENCH =====
 
 // ── 可交互判定 ─────────────────────────────────────────────────────────────
 
@@ -333,7 +347,7 @@ function maybeFinish(): void {
   marks["r-finish"] = wallNow();
   info.raf = { callbacks: rafCallbacks, timeouts: rafTimeouts, healthy: rafTimeouts === 0 };
   try {
-    (globalThis as any).electronAPI.__benchPush({ marks, info, done: true });
+    (globalThis as any).electronAPI.__benchPush({ marks, info, session: sessionId, done: true });
   } catch {
     /* 忽略 */
   }

@@ -59,6 +59,7 @@ async function createWindow() {
   // 注册为主窗口
   trackWindow(win, true);
   BENCH.trackWindow(win); // PROTOTYPE BENCH
+  void BENCH.startNetProbe(win); // PROTOTYPE BENCH（只定性，不计时）
 
   globalShortcut.register("CommandOrControl+Shift+I", () => {
     const targetWin = getAvailableWindow();

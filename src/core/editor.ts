@@ -170,6 +170,12 @@ export class MilkupEditor implements IMilkupEditor {
   private _destroyed = false;
 
   constructor(container: HTMLElement, config: MilkupConfig = {}) {
+    // ===== PROTOTYPE BENCH (Issue #18 启动基准, throwaway, 用完连同 src/bench 一起删) =====
+    // 阶段拆解用：createMilkupEditor 内部按「解析 / 建 state / 建 view / 插件初始化」分段。
+    // 走全局函数而不是 import，是为了让 src/core 不新增模块依赖（模块求值时间本身是指标）。
+    const bench = (globalThis as any).__benchMark as ((n: string, d?: unknown) => void) | undefined;
+    bench?.("r-core-ctor-begin", { isActive: Boolean(config.content) });
+    // ===== /PROTOTYPE BENCH =====
     this.config = { ...defaultConfig, ...config };
     this.schema = milkupSchema;
     this.parser = new MarkdownParser(this.schema);
@@ -177,12 +183,17 @@ export class MilkupEditor implements IMilkupEditor {
 
     // 解析初始内容
     const { doc } = this.parser.parse(this.config.content || "");
+    bench?.("r-core-parse-done", {
+      contentChars: (this.config.content || "").length,
+      docNodes: doc.childCount,
+    }); // PROTOTYPE BENCH
 
     // 创建编辑器状态
     const state = EditorState.create({
       doc,
       plugins: this.createPlugins(),
     });
+    bench?.("r-core-state-done"); // PROTOTYPE BENCH
 
     // 创建编辑器视图
     this.view = new EditorView(container, {
@@ -217,14 +228,19 @@ export class MilkupEditor implements IMilkupEditor {
       },
     });
 
+    bench?.("r-core-view-done"); // PROTOTYPE BENCH
+
     // 初始化自定义插件
     this.initPlugins();
+    bench?.("r-core-initplugins-done"); // PROTOTYPE BENCH
 
     // 初始化链接 tooltip 和点击拦截
     this.initLinkHandler();
+    bench?.("r-core-linkhandler-done"); // PROTOTYPE BENCH
 
     // 创建搜索面板（挂载到 container，不在 contenteditable 内）
     this.createSearchPanel(container);
+    bench?.("r-core-searchpanel-done"); // PROTOTYPE BENCH
 
     // 设置初始源码视图状态
     if (this.config.sourceView) {
