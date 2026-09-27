@@ -184,4 +184,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("update:status", (_event, value) => callback(value)),
   onDownloadProgress: (callback: (progress: any) => void) =>
     ipcRenderer.on("update:download-progress", (_event, value) => callback(value)),
+  // ===== PROTOTYPE BENCH (Issue #18 启动基准, throwaway, 用完连同 src/bench 一起删) =====
+  // 渲染进程拿不到 process.env，基准开关只能从这里透传。值为 null 时应用行为完全不变。
+  __bench: (() => {
+    try {
+      const run = process.env.MILKUP_BENCH_RUN;
+      if (!run) return null;
+      return {
+        runId: run,
+        seed: process.env.MILKUP_BENCH_SEED ? JSON.parse(process.env.MILKUP_BENCH_SEED) : null,
+      };
+    } catch {
+      return null;
+    }
+  })(),
+  __benchPush: (payload: any) => ipcRenderer.send("bench:prototype-mark", payload),
+  // ===== /PROTOTYPE BENCH =====
 });

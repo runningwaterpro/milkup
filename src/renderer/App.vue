@@ -1,4 +1,7 @@
 <script setup lang="ts">
+// ===== PROTOTYPE BENCH (Issue #18 启动基准, throwaway, 用完连同 src/bench 一起删) =====
+import { benchExpectStableReady, benchMark } from "@/bench/prototype";
+// ===== /PROTOTYPE BENCH =====
 import emitter from "@/renderer/events";
 import { useContext } from "@/renderer/hooks/useContext";
 import { useConfig } from "@/renderer/hooks/useConfig";
@@ -265,17 +268,35 @@ function onOutlineTransitionEnd(e: TransitionEvent) {
 onMounted(() => {
   window.addEventListener("resize", syncSidebarWidth);
   void nextTick().then(syncSidebarWidth);
+  // ===== PROTOTYPE BENCH: 只加打点，不改原来的调用顺序 =====
+  benchMark("r-app-mounted");
+  benchExpectStableReady([
+    "r-theme-applied",
+    "r-fonts-resolved",
+    "r-other-config-applied",
+    "r-spellcheck-applied",
+    "r-workspace-resolved",
+  ]);
+  // ===== /PROTOTYPE BENCH =====
   initTheme();
-  initFont();
+  benchMark("r-theme-applied"); // PROTOTYPE BENCH
+  initFont().then(() => benchMark("r-fonts-resolved")); // PROTOTYPE BENCH（挂 then 不改时序）
   initOtherConfig();
+  benchMark("r-other-config-applied"); // PROTOTYPE BENCH
   initSpellCheck();
+  benchMark("r-spellcheck-applied"); // PROTOTYPE BENCH
   const startupPath = config.value.workspace?.startupPath;
   if (startupPath && shouldAutoLoadWorkspace(startupPath)) {
+    // 无论走不走工作区分支，r-workspace-resolved 都必须出现，否则「稳定就绪」判定会一直挂着
     window.electronAPI.workspaceExists(startupPath).then((exists) => {
       if (exists) {
-        openWorkSpaceByPath(startupPath);
+        openWorkSpaceByPath(startupPath); // PROTOTYPE BENCH: useWorkSpace 内部打点
+      } else {
+        benchMark("r-workspace-resolved"); // PROTOTYPE BENCH
       }
     });
+  } else {
+    benchMark("r-workspace-resolved"); // PROTOTYPE BENCH：没有配置启动工作区
   }
   emitter.on("update:available", onUpdateAvailable);
 });

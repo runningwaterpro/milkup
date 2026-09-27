@@ -5,6 +5,9 @@
  * 每个 tab 拥有独立的编辑器实例（v-for + v-show 模式）
  */
 import type { Tab } from "@/types/tab";
+// ===== PROTOTYPE BENCH (Issue #18 启动基准, throwaway, 用完连同 src/bench 一起删) =====
+import { benchMark, benchMarkAfterFrames, benchProbeInteractive } from "@/bench/prototype";
+// ===== /PROTOTYPE BENCH =====
 import { computed, ref, onMounted, onUnmounted, watch, nextTick } from "vue";
 import {
   MilkupEditor,
@@ -340,6 +343,12 @@ function createEditorInstance() {
   };
 
   editor = createMilkupEditor(containerRef.value, config);
+  benchMark("r-editor-instance-created"); // PROTOTYPE BENCH
+  // PROTOTYPE BENCH: 真的派发一次输入并回读文档，确认编辑器能接收输入才算「可交互」
+  if (props.isActive) {
+    benchProbeInteractive(() => editor);
+  }
+  // ===== /PROTOTYPE BENCH =====
   if (props.isActive) {
     void nextTick().then(() => editor?.refreshClipboardFallbacks());
   }
@@ -445,6 +454,13 @@ onMounted(async () => {
   }
   try {
     createEditorInstance();
+    // ===== PROTOTYPE BENCH: 确认 ProseMirror 内容真的进了一帧后的 DOM =====
+    if (props.isActive) {
+      benchMarkAfterFrames("r-editor-first-frame", 2, {
+        pmChildNodes: containerRef.value?.querySelector(".ProseMirror")?.childNodes.length ?? -1,
+      });
+    }
+    // ===== /PROTOTYPE BENCH =====
   } finally {
     if (isEditorInitializing.value) {
       await nextFrame();

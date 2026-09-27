@@ -1,4 +1,7 @@
 import toast from "autotoast.js";
+// ===== PROTOTYPE BENCH (Issue #18 启动基准, throwaway, 用完连同 src/bench 一起删) =====
+import { benchMark } from "@/bench/prototype";
+// ===== /PROTOTYPE BENCH =====
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useConfig } from "./useConfig";
 import useTab from "./useTab";
@@ -108,6 +111,7 @@ async function getWorkSpace() {
     isLoadWorkSpace = true;
     // 更新文件夹信息
     workSpace.value = result;
+    benchMark("r-workspace-resolved", { trigger: "implicit-file-dir" }); // PROTOTYPE BENCH
     // 开始监听目录（远程的周期刷新由 main 进程的轮询 interval 负责）
     startWatching(directoryPath);
   } catch {
@@ -132,6 +136,7 @@ async function openWorkSpaceByPath(selectedPath: string) {
     workSpace.value = directoryFiles;
     isLoadWorkSpace = true;
     startWatching(selectedPath);
+    benchMark("r-workspace-resolved", { trigger: "startup-path" }); // PROTOTYPE BENCH
     return true;
   } catch {
     return false;
@@ -161,6 +166,7 @@ function startWatching(dirPath: string) {
   }
   watchedDirPath.value = dirPath;
   window.electronAPI.watchDirectory(dirPath);
+  benchMark("r-workspace-watch-started"); // PROTOTYPE BENCH
 }
 
 // 停止监听

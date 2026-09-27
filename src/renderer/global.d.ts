@@ -110,6 +110,10 @@ interface Window {
     saveCustomTheme: (theme: any) => void;
     platform: NodeJS.Platform;
     rendererReady: () => void;
+    // ===== PROTOTYPE BENCH (Issue #18 启动基准, throwaway) =====
+    __bench: { runId: string; seed: Record<string, string> | null } | null;
+    __benchPush: (payload: any) => void;
+    // ===== /PROTOTYPE BENCH =====
     // Tab 拖拽分离
     tearOffTabStart: (
       tabData: TearOffTabData,

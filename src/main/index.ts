@@ -15,6 +15,11 @@ import {
 import createMenu from "./menu";
 import { setupUpdateHandlers } from "./update";
 import { getAdaptiveEditorWindowOptions, trackWindow } from "./windowManager";
+// ===== PROTOTYPE BENCH (Issue #18 启动基准, throwaway, 用完连同 src/bench 一起删) =====
+import { BENCH } from "../bench/prototype-main";
+BENCH.boot();
+BENCH.startMemorySampler();
+// ===== /PROTOTYPE BENCH =====
 
 let win: BrowserWindow | null = null;
 let themeEditorWindow: BrowserWindow | null = null;
@@ -53,6 +58,7 @@ async function createWindow() {
 
   // 注册为主窗口
   trackWindow(win, true);
+  BENCH.trackWindow(win); // PROTOTYPE BENCH
 
   globalShortcut.register("CommandOrControl+Shift+I", () => {
     const targetWin = getAvailableWindow();
@@ -83,17 +89,20 @@ async function createWindow() {
 
   const indexPath = path.join(__dirname, "../../dist", "index.html");
 
+  BENCH.mark("m-page-load-start"); // PROTOTYPE BENCH
   if (process.env.VITE_DEV_SERVER_URL) {
     await win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
     await win.loadFile(indexPath);
   }
+  BENCH.mark("m-page-load-end"); // PROTOTYPE BENCH
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.webContents.openDevTools();
   }
 
   win.maximize();
+  BENCH.mark("m-window-maximized"); // PROTOTYPE BENCH
 
   // macOS: 窗口关闭时如果不是退出流程且不是主动关闭，只隐藏而不关闭
   win.on("close", (event) => {
@@ -262,11 +271,13 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  BENCH.mark("m-app-ready"); // PROTOTYPE BENCH
   // 注册所有 IPC 处理程序（只注册一次，防止重复注册报错）
   registerGlobalIpcHandlers();
   registerIpcOnHandlers();
   registerIpcHandleHandlers();
   setupUpdateHandlers();
+  BENCH.mark("m-ipc-registered"); // PROTOTYPE BENCH
 
   // 注册自定义协议处理器（仅用于兼容旧版本残留的 milkup:// URL）
   // 新版本使用 file:// 协议直接加载本地图片
@@ -311,6 +322,7 @@ app.whenReady().then(async () => {
 
   // 监听渲染进程就绪事件 (Moved up to avoid race condition)
   ipcMain.on("renderer-ready", () => {
+    BENCH.mark("m-renderer-ready-ipc"); // PROTOTYPE BENCH
     isRendererReady = true;
     if (pendingStartupFiles.length > 0) {
       const filesToOpen = pendingStartupFiles;
@@ -322,6 +334,7 @@ app.whenReady().then(async () => {
   await createWindow();
 
   sendLaunchFileIfExists();
+  BENCH.mark("m-launch-file-dispatched"); // PROTOTYPE BENCH
 });
 
 // 单实例锁
