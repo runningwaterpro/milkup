@@ -83,7 +83,107 @@ export async function exportElementWithStylesAndImages(
 function cloneWithInlineStyles(element: HTMLElement): HTMLElement {
   const clone = element.cloneNode(true) as HTMLElement;
   applyStylesRecursive(element, clone);
+  // 必须在内联样式之后剔除：样式内联按索引配对源与克隆的子节点，
+  // 提前删除会让后续节点全部错位
+  stripEditorChrome(clone);
   return clone;
+}
+
+/**
+ * 不写入导出文件的属性。
+ *
+ * 这些是编辑区当前的运行时布局状态，不是设计意图：getComputedStyle 会把
+ * 流式的 `width: 100%` 解析成实际像素，一旦内联就把当前窗口的宽度固化了。
+ * 导出文件在别的宽度的浏览器里打开时，内容会保持编辑器窗口那么窄。
+ *
+ * `zoom` 同理：编辑区缩放只是显示层。
+ */
+export const EXPORT_OMIT_PROPERTIES: ReadonlySet<string> = new Set([
+  "width",
+  "height",
+  "min-width",
+  "min-height",
+  "position",
+  "top",
+  "right",
+  "bottom",
+  "left",
+  "inset",
+  "overflow",
+  "overflow-x",
+  "overflow-y",
+  "float",
+  "clear",
+  "transform",
+  "zoom",
+]);
+
+/** 无实际效果的默认值，写进去只是让文件变大 */
+const EXPORT_NOISE_VALUES: ReadonlySet<string> = new Set([
+  "none",
+  "normal",
+  "auto",
+  "0",
+  "0px",
+  "0%",
+]);
+
+export function serializeComputedStyle(computed: CSSStyleDeclaration): string {
+  const declarations: string[] = [];
+  for (const key of computed) {
+    if (EXPORT_OMIT_PROPERTIES.has(key)) continue;
+    const value = computed.getPropertyValue(key);
+    if (EXPORT_NOISE_VALUES.has(value)) continue;
+    declarations.push(`${key}:${value};`);
+  }
+  return declarations.join("");
+}
+
+/**
+ * 编辑器 UI 的 class，不属于文档内容，导出时剔除。
+ *
+ * 判定标准：这个元素在 Markdown 源码里有对应物吗？
+ * - 「复制」按钮、代码块语言选择器：源码里没有 → 剔除
+ * - 任务列表勾选框 `.milkup-task-checkbox`：源码里是 `[x]` → 保留
+ * - 列表符号 `.milkup-list-marker`：源码里是 `-` / `1.` → 保留
+ * - 语法高亮标记 `.milkup-syntax-marker`：源码里的 `*` `_` 等 → 保留
+ *
+ * 新增编辑器 UI 时要加进这里。
+ */
+const EXPORT_EDITOR_CHROME_CLASSES: ReadonlySet<string> = new Set([
+  // 代码块工具条
+  "milkup-code-block-copy-btn",
+  "milkup-code-block-header",
+  "milkup-code-block-footer",
+  "milkup-code-block-lang-select",
+  "milkup-code-block-mode-select",
+  "milkup-custom-select",
+  // 浮层
+  "milkup-context-menu",
+  "milkup-context-menu-submenu",
+  "milkup-table-grid-picker",
+  "milkup-link-tooltip",
+  "milkup-search-panel",
+  "milkup-search-row",
+  "milkup-search-wrapper",
+  // 其它界面元素
+  "milkup-html-block-header",
+  "milkup-html-block-label",
+  "milkup-replace-row",
+]);
+
+export function isEditorChrome(className: string): boolean {
+  return className
+    .split(/\s+/)
+    .filter(Boolean)
+    .some((cls) => EXPORT_EDITOR_CHROME_CLASSES.has(cls));
+}
+
+/** 剔除克隆树里的编辑器 UI 节点 */
+function stripEditorChrome(root: Element): void {
+  for (const className of EXPORT_EDITOR_CHROME_CLASSES) {
+    root.querySelectorAll(`.${className}`).forEach((node) => node.remove());
+  }
 }
 
 /**
@@ -92,14 +192,7 @@ function cloneWithInlineStyles(element: HTMLElement): HTMLElement {
  * @param dest - 克隆节点
  */
 function applyStylesRecursive(src: Element, dest: Element): void {
-  const computed = getComputedStyle(src);
-  const style = Array.from(computed)
-    // 编辑区缩放只是显示层，导出必须保持原始排版。
-    // 辅助工具靠 zoom 反向缩放保持固定尺寸，这个值不能进导出文件。
-    .filter((key) => key !== "zoom")
-    .map((key) => `${key}:${computed.getPropertyValue(key)};`)
-    .join("");
-  dest.setAttribute("style", style);
+  dest.setAttribute("style", serializeComputedStyle(getComputedStyle(src)));
 
   // 🚨 修复 <a> 链接的点击性
   if (dest instanceof HTMLAnchorElement) {
