@@ -648,7 +648,8 @@
     color 0.2s;
 }
 
-.milkup-mermaid-preview:hover .milkup-graphic-copy-btn {
+.milkup-mermaid-preview:hover .milkup-graphic-copy-btn,
+.milkup-image-preview:hover .milkup-graphic-copy-btn {
   opacity: 1;
 }
 
@@ -782,8 +783,9 @@
   text-align: center;
 }
 
-/* 图片预览区域 */
+/* 图片预览区域。图片块同时是图形容器，复制按钮挂在它的右上角 */
 .milkup-editor .milkup-image-block .milkup-image-preview {
+  position: relative;
   cursor: pointer;
 }
 

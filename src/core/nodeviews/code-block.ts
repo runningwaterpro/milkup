@@ -51,7 +51,6 @@ import { searchPluginKey } from "../plugins/search";
 import {
   buildCodeClipboardPayload,
   canDeleteAfterClipboardWrite,
-  clearGraphicCache,
   copyGraphicToClipboard,
   createCodeClipboardExtension,
   createGraphicCopyButton,
@@ -61,6 +60,8 @@ import {
   requestClipboardPngFallback,
   writeClipboardPayload,
 } from "../clipboard";
+import { clearGraphicCache } from "../utils/graphic-cache";
+import type { GraphicProduction } from "../clipboard";
 
 /** Mermaid 显示模式 */
 type MermaidDisplayMode = "code" | "mixed" | "diagram";
@@ -562,7 +563,7 @@ export class CodeBlockView implements NodeView {
   lineNumbersCompartment: Compartment;
   searchHighlightCompartment: Compartment;
   mermaidPreview: HTMLElement | null = null;
-  mermaidGraphicHost: HTMLElement | null = null;
+  mermaidGraphicArea: HTMLElement | null = null;
   mermaidDisplayMode: MermaidDisplayMode = globalMermaidDefaultMode;
   themeObserver: MutationObserver | null = null;
   headerElement: HTMLElement | null = null;
@@ -1594,10 +1595,10 @@ export class CodeBlockView implements NodeView {
     if (!this.mermaidPreview) {
       this.mermaidPreview = document.createElement("div");
       this.mermaidPreview.className = "milkup-mermaid-preview";
-      // 图形本体与复制按钮分开存放，重新渲染图形时不会把按钮冲掉。
-      this.mermaidGraphicHost = document.createElement("div");
-      this.mermaidGraphicHost.className = "milkup-mermaid-graphic";
-      this.mermaidPreview.appendChild(this.mermaidGraphicHost);
+      // 图形与复制按钮分开存放，重新渲染图形时不会把按钮冲掉。
+      this.mermaidGraphicArea = document.createElement("div");
+      this.mermaidGraphicArea.className = "milkup-mermaid-graphic";
+      this.mermaidPreview.appendChild(this.mermaidGraphicArea);
       this.mermaidPreview.appendChild(
         createGraphicCopyButton(this.mermaidPreview, {
           produce: (container: Element) => this.produceMermaidGraphic(container),
@@ -1607,7 +1608,7 @@ export class CodeBlockView implements NodeView {
     }
 
     const preview = this.mermaidPreview;
-    const host = this.mermaidGraphicHost as HTMLElement;
+    const area = this.mermaidGraphicArea as HTMLElement;
 
     // 排队执行，避免多个 mermaid 块同时 render 互相干扰
     mermaidRenderQueue = mermaidRenderQueue.then(async () => {
@@ -1620,7 +1621,7 @@ export class CodeBlockView implements NodeView {
         initializeMermaid(mermaid.default, true);
 
         const { svg } = await mermaid.default.render(renderId, content);
-        host.innerHTML = svg;
+        area.innerHTML = svg;
         clearGraphicCache(preview);
         padMermaidSvgBounds(preview);
         // 根据实际背景色修正文本颜色
@@ -1634,7 +1635,7 @@ export class CodeBlockView implements NodeView {
         document.getElementById(`d${renderId}`)?.remove();
         document.getElementById(renderId)?.remove();
         document.getElementById(`i${renderId}`)?.remove();
-        host.innerHTML = `<div class="milkup-mermaid-error">Mermaid 渲染错误</div>`;
+        area.innerHTML = `<div class="milkup-mermaid-error">Mermaid 渲染错误</div>`;
       }
     });
 
@@ -1647,9 +1648,9 @@ export class CodeBlockView implements NodeView {
    * 复制用的图要重新渲染一遍，且关掉 HTML 标签：Chromium 会把含 foreignObject 的 SVG
    * 判为污染画布，含 foreignObject 的 SVG 导不出位图。
    */
-  private async produceMermaidGraphic(container: Element): Promise<string | null> {
+  private async produceMermaidGraphic(container: Element): Promise<GraphicProduction> {
     const source = this.cm.state.doc.toString();
-    if (!source.trim()) return null;
+    if (!source.trim()) return { dataUrl: null, reason: "Mermaid 代码为空" };
 
     const renderId = `mermaid-copy-${++mermaidIdCounter}`;
     let dataUrl: string | null = null;
@@ -1685,7 +1686,7 @@ export class CodeBlockView implements NodeView {
     });
 
     await mermaidRenderQueue;
-    return dataUrl;
+    return dataUrl ? { dataUrl } : { dataUrl: null, reason: "Mermaid 渲染失败" };
   }
 
   /**

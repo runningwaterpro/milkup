@@ -13,7 +13,8 @@ import { EditorView, NodeView } from "prosemirror-view";
 import { NodeSelection, Selection } from "prosemirror-state";
 import { sourceViewManager } from "../decorations";
 import { resolveImageSrc } from "../utils/image-path";
-import { cacheClipboardImage } from "../clipboard";
+import { clearGraphicCache } from "../utils/graphic-cache";
+import { cacheClipboardImage, createGraphicCopyButton, produceImageGraphic } from "../clipboard";
 
 // 存储所有 ImageView 实例，用于全局更新
 const imageViews = new Set<ImageView>();
@@ -75,7 +76,10 @@ function parseImageMarkdown(
  */
 export class ImageView implements NodeView {
   dom: HTMLElement;
-  private imgElement: HTMLElement;
+  /** 图形容器：承载图片，复制按钮固定挂在它的右上角 */
+  private graphicContainer: HTMLElement;
+  /** 当前渲染出来的图形（图片或占位） */
+  private currentGraphic: HTMLElement | null = null;
   private sourceContainer: HTMLElement;
   private sourceInput: HTMLInputElement;
   private view: EditorView;
@@ -100,10 +104,23 @@ export class ImageView implements NodeView {
     this.dom = document.createElement("div");
     this.dom.className = "milkup-image-block";
 
-    // 创建图片元素
-    this.imgElement = document.createElement("div");
-    this.imgElement.className = "milkup-image-preview";
-    this.dom.appendChild(this.imgElement);
+    // 创建图形容器
+    this.graphicContainer = document.createElement("div");
+    this.graphicContainer.className = "milkup-image-preview";
+    this.dom.appendChild(this.graphicContainer);
+
+    const copyButton = createGraphicCopyButton(this.graphicContainer, {
+      produce: produceImageGraphic,
+    });
+    // 点复制按钮不打开图片预览：预览是双击图片触发的，双击事件要单独拦。
+    copyButton.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    copyButton.addEventListener("mousedown", (event) => {
+      event.stopPropagation();
+    });
+    this.graphicContainer.appendChild(copyButton);
 
     // 创建源码容器（编辑模式下显示）
     this.sourceContainer = document.createElement("div");
@@ -135,11 +152,11 @@ export class ImageView implements NodeView {
     this.updateContent(node);
 
     // 点击图片进入编辑模式
-    this.imgElement.addEventListener("click", (e) => {
+    this.graphicContainer.addEventListener("click", (e) => {
       e.preventDefault();
       this.selectThisNode();
     });
-    this.imgElement.addEventListener("dblclick", (e) => {
+    this.graphicContainer.addEventListener("dblclick", (e) => {
       e.preventDefault();
       e.stopPropagation();
       const { src, alt } = this.node.attrs;
@@ -355,7 +372,7 @@ export class ImageView implements NodeView {
       // 进入源码模式
       this.dom.classList.add("source-view");
       // 隐藏图片预览
-      this.imgElement.style.display = "none";
+      this.graphicContainer.style.display = "none";
       // 隐藏编辑模式的源码容器
       this.sourceContainer.style.display = "none";
       // 显示源码文本
@@ -367,7 +384,7 @@ export class ImageView implements NodeView {
       // 退出源码模式
       this.dom.classList.remove("source-view");
       // 显示图片预览
-      this.imgElement.style.display = "";
+      this.graphicContainer.style.display = "";
       // 恢复编辑模式的源码容器显示状态
       this.sourceContainer.style.display = "";
       // 移除源码文本
@@ -402,8 +419,9 @@ export class ImageView implements NodeView {
    * 渲染图片
    */
   private renderImage(src: string, alt: string, title?: string, linkHref?: string): void {
-    // 清空容器
-    this.imgElement.innerHTML = "";
+    // 换图了：图形缓存里的旧图也要丢掉。
+    this.clearGraphic();
+    clearGraphicCache(this.graphicContainer);
 
     if (!src) {
       this.showImagePlaceholder("请输入图片地址");
@@ -437,17 +455,33 @@ export class ImageView implements NodeView {
       a.addEventListener("click", (e) => {
         e.preventDefault();
       });
-      this.imgElement.appendChild(a);
+      this.setGraphic(a);
     } else {
-      this.imgElement.appendChild(img);
+      this.setGraphic(img);
     }
+  }
+
+  /**
+   * 换掉当前图形。复制按钮不在图形里，不会被换掉。
+   */
+  private setGraphic(graphic: HTMLElement): void {
+    this.currentGraphic?.remove();
+    this.graphicContainer.insertBefore(graphic, this.graphicContainer.firstChild);
+    this.currentGraphic = graphic;
+  }
+
+  /**
+   * 清掉当前图形。
+   */
+  private clearGraphic(): void {
+    this.currentGraphic?.remove();
+    this.currentGraphic = null;
   }
 
   /**
    * 显示图片加载失败占位
    */
   private showImageError(src: string): void {
-    this.imgElement.innerHTML = "";
     const placeholder = document.createElement("div");
     placeholder.className = "milkup-image-placeholder milkup-image-error-placeholder";
     placeholder.innerHTML = `
@@ -455,21 +489,20 @@ export class ImageView implements NodeView {
       <span class="milkup-image-placeholder-text">图片加载失败</span>
       <span class="milkup-image-placeholder-src">${this.escapeHtml(src)}</span>
     `;
-    this.imgElement.appendChild(placeholder);
+    this.setGraphic(placeholder);
   }
 
   /**
    * 显示图片占位
    */
   private showImagePlaceholder(text: string): void {
-    this.imgElement.innerHTML = "";
     const placeholder = document.createElement("div");
     placeholder.className = "milkup-image-placeholder";
     placeholder.innerHTML = `
       <span class="milkup-image-placeholder-icon">🖼️</span>
       <span class="milkup-image-placeholder-text">${this.escapeHtml(text)}</span>
     `;
-    this.imgElement.appendChild(placeholder);
+    this.setGraphic(placeholder);
   }
 
   /**
@@ -627,7 +660,7 @@ export class ImageView implements NodeView {
 
     // 调整 DOM 顺序
     if (position === "before") {
-      this.dom.insertBefore(this.sourceContainer, this.imgElement);
+      this.dom.insertBefore(this.sourceContainer, this.graphicContainer);
       this.dom.classList.add("source-before");
       this.dom.classList.remove("source-after");
     } else {
