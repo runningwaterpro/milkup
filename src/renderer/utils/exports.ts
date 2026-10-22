@@ -224,6 +224,8 @@ const EXPORT_EDITOR_CHROME_CLASSES: ReadonlySet<string> = new Set([
   "milkup-code-block-lang-select",
   "milkup-code-block-mode-select",
   "milkup-custom-select",
+  // 图形复制按钮
+  "milkup-graphic-copy-btn",
   // 浮层
   "milkup-context-menu",
   "milkup-context-menu-submenu",
