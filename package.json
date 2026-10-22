@@ -12,7 +12,7 @@
   "author": "Larry Zhu",
   "repository": {
     "type": "git",
-    "url": "https://github.com/auto-plugin/milkup.git"
+    "url": "https://github.com/runningwaterpro/milkup.git"
   },
   "main": "dist-electron/main/index.js",
   "scripts": {
@@ -27,7 +27,8 @@
     "dist:mac-arm64": "pnpm run generate-icons && pnpm run build && electron-builder --mac --arm64",
     "dist:linux-x64": "pnpm run generate-icons && pnpm run build && electron-builder --linux --x64",
     "dist:linux-arm64": "pnpm run generate-icons && pnpm run build && electron-builder --linux --arm64",
-    "dist:win-x64": "pnpm run generate-icons && pnpm run build && electron-builder --win --x64",
+    "dist:win-x64": "pnpm run generate-icons && pnpm run build && electron-builder --win nsis --x64 --publish=never --config.directories.output=release/nsis",
+    "dist:win-portable": "pnpm run generate-icons && pnpm run build && electron-builder --win portable --x64 --publish=never --config.directories.output=release/portable",
     "lint": "oxlint . && oxfmt --check .",
     "format": "oxlint --fix . && oxfmt .",
     "test": "node --experimental-strip-types --test \"test/**/*.test.mjs\"",
@@ -163,27 +164,54 @@
     ]
   },
   "build": {
-    "appId": "com.auto-plugin.milkup",
+    "appId": "com.runningwaterpro.milkup",
     "productName": "milkup",
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "src/assets/icons/milkup.ico",
+        "to": "assets/icons/milkup.ico"
+      },
+      {
+        "from": "src/assets/icons/milkup.icns",
+        "to": "assets/icons/milkup.icns"
+      }
+    ],
     "icon": "src/assets/icons/milkup",
     "fileAssociations": [
       {
-        "ext": "md",
-        "name": "Markdown Document",
+        "ext": [
+          "md",
+          "markdown"
+        ],
+        "name": "RunningWaterPro.Milkup.Markdown",
         "description": "Markdown File",
         "role": "Editor",
         "icon": "src/assets/icons/file"
       }
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "runningwaterpro",
+      "repo": "milkup",
+      "releaseType": "release"
+    },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-Setup.${ext}",
+      "installerIcon": "src/assets/icons/milkup.ico",
+      "uninstallerIcon": "src/assets/icons/milkup.ico",
+      "installerHeaderIcon": "src/assets/icons/milkup.ico"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-Portable.${ext}"
     },
     "win": {
+      "icon": "src/assets/icons/milkup.ico",
       "target": [
         {
           "target": "nsis",

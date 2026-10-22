@@ -20,6 +20,7 @@ build/
 .vite/
 
 # Electron build artifacts
+release/
 *.asar
 *.asar.unpacked
 

@@ -5,6 +5,14 @@ import { getEditorWindows } from "./windowManager";
 
 import { createWriteStream } from "node:fs";
 
+const UPDATE_REPOSITORY = "runningwaterpro/milkup";
+const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`;
+
+/** 便携版由 electron-builder 注入该环境变量。 */
+function isPortableBuild(): boolean {
+  return Boolean(process.env.PORTABLE_EXECUTABLE_DIR);
+}
+
 /**
  * 解析版本号字符串
  * 支持格式：
@@ -164,13 +172,21 @@ function broadcastToAll(channel: string, ...args: any[]): void {
 export function setupUpdateHandlers() {
   // 1. 检查更新
   ipcMain.handle("update:check", async () => {
+    if (isPortableBuild()) {
+      console.log("[Main] Portable build: auto-update is disabled");
+      broadcastToAll("update:status", {
+        status: "not-available",
+        info: { reason: "portable" },
+      });
+      return null;
+    }
+
     try {
       console.log("[Main] Starting update check...");
       broadcastToAll("update:status", { status: "checking" });
 
-      const api = "https://api.github.com/repos/auto-plugin/milkup/releases/latest";
-      console.log("[Main] Fetching from GitHub API:", api);
-      const response = await net.fetch(api);
+      console.log("[Main] Fetching from GitHub API:", UPDATE_API);
+      const response = await net.fetch(UPDATE_API);
 
       if (!response.ok) {
         console.error("[Main] GitHub API Error:", response.status, response.statusText);
@@ -178,7 +194,11 @@ export function setupUpdateHandlers() {
       }
 
       const data = await response.json();
+      if (typeof data.tag_name !== "string") {
+        throw new Error("GitHub release has no tag_name");
+      }
       const latestVersion = data.tag_name;
+      const assets = Array.isArray(data.assets) ? data.assets : [];
       const currentVersion = app.getVersion();
       console.log("[Main] Latest version:", latestVersion, "Current version:", currentVersion);
 
@@ -197,35 +217,32 @@ export function setupUpdateHandlers() {
         let asset: any = null;
 
         if (process.platform === "win32") {
-          // Windows: 优先匹配包含 Setup 且对应后缀的文件
-          asset = data.assets.find((a: any) => a.name.endsWith(ext) && a.name.includes("Setup"));
-          if (!asset) {
-            asset = data.assets.find((a: any) => a.name.endsWith(ext));
-          }
+          // 只接受 NSIS 安装包；Portable 不能被自动更新选中。
+          asset = assets.find((a: any) => a.name.endsWith(ext) && a.name.includes("Setup"));
         } else if (process.platform === "darwin") {
           // macOS: 区分 arm64 和 x64
           const arch = process.arch; // 'arm64' or 'x64'
 
           // 1. 优先寻找包含当前架构名称的包 (如 milkup-1.0.0-arm64.dmg)
-          asset = data.assets.find((a: any) => a.name.endsWith(ext) && a.name.includes(arch));
+          asset = assets.find((a: any) => a.name.endsWith(ext) && a.name.includes(arch));
 
           if (!asset) {
             // 2. 如果当前是 arm64，尝试寻找 universal (不含 arm64 也不含 x64, 或者含 universal)
             //    或者实在找不到，允许回退到 x64 (Rosetta 转译)
             if (arch === "arm64") {
               asset =
-                data.assets.find((a: any) => a.name.endsWith(ext) && !a.name.includes("x64")) ||
-                data.assets.find((a: any) => a.name.endsWith(ext)); // Fallback to any dmg (likely x64)
+                assets.find((a: any) => a.name.endsWith(ext) && !a.name.includes("x64")) ||
+                assets.find((a: any) => a.name.endsWith(ext)); // Fallback to any dmg (likely x64)
             } else {
               // 3. 如果当前是 x64，坚决不能用 arm64
-              asset = data.assets.find(
+              asset = assets.find(
                 (a: any) => a.name.endsWith(ext) && !a.name.includes("arm64")
               );
             }
           }
         } else {
           // Linux / Others
-          asset = data.assets.find((a: any) => a.name.endsWith(ext));
+          asset = assets.find((a: any) => a.name.endsWith(ext));
         }
 
         if (asset) {
@@ -267,6 +284,10 @@ export function setupUpdateHandlers() {
 
   // 2. 下载更新
   ipcMain.handle("update:download", async () => {
+    if (isPortableBuild()) {
+      throw new Error("Portable build does not support auto-update");
+    }
+
     if (!currentUpdateInfo) {
       throw new Error("No update check info found");
     }
@@ -443,6 +464,10 @@ export function setupUpdateHandlers() {
 
   // 3. 退出并安装
   ipcMain.handle("update:install", () => {
+    if (isPortableBuild()) {
+      return;
+    }
+
     if (!downloadedFilePath || !fs.existsSync(downloadedFilePath)) {
       console.error("[Main] Installer not found");
       return;

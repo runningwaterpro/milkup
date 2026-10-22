@@ -3,238 +3,210 @@ name: Release
 on:
   push:
     tags:
-      - 'v*' # 当推送以 v 开头的标签时触发，如 v1.0.0
-      - 'Beta*' # 当推送以 Beta 开头的标签时触发，如 Beta-v1.0.0
+      - "v*"
+  # 手动运行只构建并上传 workflow artifact，不创建 GitHub Release。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-
-    strategy:
-      matrix:
-        include:
-          # macOS 构建 (支持 arm64 和 x64)
-          - os: macos-latest
-            platform: mac
-            arch: x64
-            script: dist:mac-x64
-          - os: macos-latest
-            platform: mac
-            arch: arm64
-            script: dist:mac-arm64
-
-          # Windows 构建 (x64)
-          - os: windows-latest
-            platform: win
-            arch: x64
-            script: dist:win-x64
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 10.13.1
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      # - name: Setup pnpm cache
-      #   uses: actions/cache@v3
-      #   with:
-      #     path: ${{ env.STORE_PATH }}
-      #     key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-      #     restore-keys: |
-      #       ${{ runner.os }}-pnpm-store-
-
-      - name: Configure Git for HTTPS
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+          version: 10.12.1
+          run_install: false
 
       - name: Install dependencies
         run: |
           pnpm install --no-frozen-lockfile
           pnpm rebuild
 
-      - name: Build application
-        run: |
-          echo "Building for ${{ matrix.platform }}-${{ matrix.arch }}"
-          pnpm run generate-icons && pnpm run build && pnpm exec electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish=never
-
-      - name: Compress win-unpacked to zip
-        if: matrix.platform == 'win'
+      - name: Verify version matches tag
+        if: github.event_name == 'push'
         shell: pwsh
-        run: Compress-Archive -Path "dist/win-unpacked/*" -DestinationPath "dist/milkup-win-x64-unpacked.zip"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $expected = "v$($pkg.version)"
+          $actual = "${{ github.ref_name }}"
+          if ($expected -ne $actual) {
+            throw "package.json version $($pkg.version) does not match tag $actual"
+          }
 
-      - name: Upload artifacts (macOS x64)
-        if: matrix.platform == 'mac' && matrix.arch == 'x64'
+      - name: Build renderer and main process
+        run: |
+          pnpm run generate-icons
+          pnpm run build
+
+      - name: Build NSIS installer
+        run: >
+          pnpm exec electron-builder
+          --win nsis
+          --x64
+          --publish=never
+          --config.directories.output=release/nsis
+
+      - name: Build portable executable
+        run: >
+          pnpm exec electron-builder
+          --win portable
+          --x64
+          --publish=never
+          --config.directories.output=release/portable
+
+      - name: Verify Windows artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $nsisDir = "release/nsis"
+          $portableDir = "release/portable"
+
+          $setup = Get-ChildItem "$nsisDir/*.exe" |
+            Where-Object { $_.Name -match "Setup" } |
+            Select-Object -First 1
+          if (-not $setup) {
+            throw "NSIS Setup executable not found in $nsisDir"
+          }
+
+          $portable = Get-ChildItem "$portableDir/*.exe" |
+            Where-Object { $_.Name -match "Portable" } |
+            Select-Object -First 1
+          if (-not $portable) {
+            throw "Portable executable not found in $portableDir"
+          }
+
+          $blockmap = "$($setup.FullName).blockmap"
+          if (-not (Test-Path $blockmap)) {
+            throw "NSIS blockmap not found: $blockmap"
+          }
+
+          $exe = Join-Path $nsisDir "win-unpacked/milkup.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Unpacked milkup.exe not found: $exe"
+          }
+          $vi = (Get-Item $exe).VersionInfo
+          if ($vi.ProductName -ne "milkup") {
+            throw "ProductName is '$($vi.ProductName)', expected 'milkup'"
+          }
+          if ($vi.OriginalFilename -match "electron") {
+            throw "OriginalFilename still points to electron.exe"
+          }
+
+          $updateYml = Join-Path $nsisDir "win-unpacked/resources/app-update.yml"
+          if (-not (Test-Path $updateYml)) {
+            throw "app-update.yml not found: $updateYml"
+          }
+          $updateText = Get-Content $updateYml -Raw
+          if ($updateText -notmatch "owner:\s*runningwaterpro") {
+            throw "app-update.yml owner is not runningwaterpro"
+          }
+          if ($updateText -notmatch "repo:\s*milkup") {
+            throw "app-update.yml repo is not milkup"
+          }
+
+          $icon = Join-Path $nsisDir "win-unpacked/resources/assets/icons/milkup.ico"
+          if (-not (Test-Path $icon)) {
+            throw "Packaged app icon not found: $icon"
+          }
+
+          $latest = Join-Path $nsisDir "latest.yml"
+          if (-not (Test-Path $latest)) {
+            throw "latest.yml not found: $latest"
+          }
+          $latestText = Get-Content $latest -Raw
+          if ($latestText -notmatch [regex]::Escape($setup.Name)) {
+            throw "latest.yml does not reference $($setup.Name)"
+          }
+          if ($latestText -match "Portable") {
+            throw "latest.yml references a Portable artifact"
+          }
+
+          if (Select-String -Path "package.json" -Pattern "auto-plugin/milkup" -Quiet) {
+            throw "package.json still points to the upstream repository"
+          }
+          if (Select-String -Path "src/main/update.ts" -Pattern "auto-plugin/milkup" -Quiet) {
+            throw "src/main/update.ts still points to the upstream repository"
+          }
+
+          Write-Host "Setup: $($setup.Name)"
+          Write-Host "Portable: $($portable.Name)"
+          Write-Host "ProductName: $($vi.ProductName)"
+          Write-Host "OriginalFilename: '$($vi.OriginalFilename)'"
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: milkup-${{ matrix.platform }}-${{ matrix.arch }}
+          name: milkup-windows
           path: |
-            dist/milkup-*.dmg
-            dist/milkup-*.dmg.blockmap
-            dist/latest-mac.yml
-          retention-days: 5
+            release/nsis/*.exe
+            release/nsis/*.exe.blockmap
+            release/nsis/latest.yml
+            release/portable/*.exe
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload artifacts (macOS arm64)
-        if: matrix.platform == 'mac' && matrix.arch == 'arm64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: milkup-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            dist/milkup-*-arm64.dmg
-            dist/milkup-*-arm64.dmg.blockmap
-            dist/latest-mac.yml
-          retention-days: 5
-
-      - name: Upload artifacts (Windows)
-        if: matrix.platform == 'win'
-        uses: actions/upload-artifact@v4
-        with:
-          name: milkup-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            dist/milkup Setup *.exe
-            dist/milkup Setup *.exe.blockmap
-            dist/milkup-win-x64-unpacked.zip
-            dist/latest.yml
-          retention-days: 5
-
-  # 创建 GitHub Release 并上传所有构建产物
   create-release:
-    needs: release
+    name: Create GitHub Release
+    needs: build-windows
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 10.13.1
-
-      - name: Install Dependencies
-        run: pnpm install
-
-      - name: Download all artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
+          name: milkup-windows
           path: artifacts
 
-      - name: Display structure of downloaded files
+      - name: Prepare release assets
+        shell: bash
         run: |
-          echo "=== Artifacts structure ==="
-          find artifacts -type f | sort
-          echo "=== DMG files ==="
-          find artifacts -name "*.dmg" | sort
-          echo "=== EXE files ==="
-          find artifacts -name "*.exe" | sort
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.exe" -o -name "*.exe.blockmap" -o -name "latest.yml" \) -exec cp {} release-assets/ \;
+          ls -la release-assets
 
-      - name: Prepare release files
-        run: |
-          mkdir -p release_files
-          # Copy unique files to avoid duplicates
-          find artifacts -name "*.dmg" -exec cp {} release_files/ \;
-          find artifacts -name "*.exe" -exec cp {} release_files/ \;
-          find artifacts -name "*.zip" -exec cp {} release_files/ \;
-          echo "=== Release files ==="
-          ls -la release_files/
-
-      - name: Create Release
-        run: pnpm run release -- --assets "release_files/*"
+      - name: Create or update release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-
-      - name: Fix author mentions in release
-        env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          REPO="${GITHUB_REPOSITORY}"
-
-          # 获取上一个 tag
-          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1)
-          if [ -z "$PREV_TAG" ]; then
-            echo "No previous tag found, skipping"
-            exit 0
-          fi
-
-          echo "Comparing $PREV_TAG...$TAG"
-
-          # 通过 GitHub API 获取两个 tag 之间的提交，提取 author name -> login 映射
-          export COMPARE_DATA=$(gh api "repos/${REPO}/compare/${PREV_TAG}...${TAG}" --jq '.commits[] | select(.author != null) | "\(.commit.author.name)=\(.author.login)"' 2>/dev/null || true)
-
-          if [ -z "$COMPARE_DATA" ]; then
-            echo "No commit data or no linked GitHub accounts, skipping"
-            exit 0
-          fi
-
-          # 获取当前 release body
-          export RELEASE_BODY=$(gh release view "$TAG" --json body --jq '.body' 2>/dev/null || true)
-          if [ -z "$RELEASE_BODY" ]; then
-            echo "Release body is empty, skipping"
-            exit 0
-          fi
-
-          # 用 node 替换 @AuthorName 为 @github-login
-          UPDATED_BODY=$(node -e "
-            const mappings = process.env.COMPARE_DATA.split('\n').filter(Boolean);
-            const nameToLogin = {};
-            for (const m of mappings) {
-              const [name, login] = m.split('=');
-              if (name && login) nameToLogin[name] = login;
-            }
-            let body = process.env.RELEASE_BODY;
-            for (const [name, login] of Object.entries(nameToLogin)) {
-              // 替换 **@Name** 或 @Name 格式
-              body = body.replace(new RegExp('@' + name.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\\$&'), 'g'), '@' + login);
-            }
-            process.stdout.write(body);
-          ")
-
-          if [ "$UPDATED_BODY" != "$RELEASE_BODY" ]; then
-            echo "Updating release with corrected author mentions"
-            gh release edit "$TAG" --notes "$UPDATED_BODY"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
           else
-            echo "No author mentions to fix"
+            gh release create "$TAG" release-assets/* \
+              --verify-tag \
+              --generate-notes \
+              --title "Milkup $TAG"
           fi
-#      - name: Create Release
-#        uses: softprops/action-gh-release@v1
-#        with:
-#          tag_name: ${{ github.ref_name }}
-#          name: milkup ${{ github.ref_name }}
-#          draft: false
-#          prerelease: false
-#          body: |
-#            ## milkup ${{ github.ref_name }}
-#
-#            ### 下载说明
-#            - **macOS Intel**: 下载 DMG 文件（不含 arm64 后缀）
-#            - **macOS Apple Silicon**: 下载带 arm64 后缀的 DMG 文件
-#            - **Windows x64**: 下载 EXE 安装文件
-#
-#            ### 更新内容
-#            请查看 commit 历史了解详细更新内容。
-#          files: release_files/*
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

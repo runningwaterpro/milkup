@@ -27,6 +27,17 @@ interface LaunchFilePayload {
   fileTraits?: FileTraits;
 }
 
+/**
+ * 打包后从 resources/assets/icons 读取图标。
+ * 开发态仍从源码目录读取，避免依赖 vite 的输出复制。
+ */
+function getAppIconPath(): string {
+  const iconFile = process.platform === "darwin" ? "milkup.icns" : "milkup.ico";
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "assets", "icons", iconFile)
+    : path.join(__dirname, "../../src/assets/icons", iconFile);
+}
+
 /** 安全获取一个可用的编辑器窗口（优先主窗口，回退到任意存活窗口） */
 function getAvailableWindow(): BrowserWindow | null {
   if (win && !win.isDestroyed()) return win;
@@ -41,7 +52,7 @@ async function createWindow() {
     ...windowOptions,
     frame: false,
     titleBarStyle: "hidden", // ✅ macOS 专属
-    icon: path.join(__dirname, "../assets/icons/milkup.ico"),
+    icon: getAppIconPath(),
     webPreferences: {
       sandbox: false,
       preload: path.resolve(__dirname, "../../dist-electron/preload.js"),
@@ -120,7 +131,7 @@ export async function createThemeEditorWindow() {
     modal: false,
     frame: false,
     titleBarStyle: "hidden",
-    icon: path.join(__dirname, "../assets/icons/milkup.ico"),
+    icon: getAppIconPath(),
     webPreferences: {
       sandbox: false,
       preload: path.resolve(__dirname, "../../dist-electron/preload.js"),
@@ -260,6 +271,11 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
+
+// 让 Windows 任务栏、快捷方式和通知使用与安装包一致的 AppUserModelID。
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.runningwaterpro.milkup");
+}
 
 app.whenReady().then(async () => {
   // 注册所有 IPC 处理程序（只注册一次，防止重复注册报错）
