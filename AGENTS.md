@@ -97,3 +97,17 @@ Issue 和 spec 记录在 `runningwaterpro/milkup`。用 `gh` CLI 时带 `--repo 
 ## 已知待办
 
 - 窄窗口下导出的 HTML 被压成竖条（既有 bug，与编辑区缩放无关）：见 issue #17
+
+## Agent skills
+
+### Issue tracker
+
+Issue 和 spec 记录在 `runningwaterpro/milkup` 的 GitHub Issues，用 `gh` CLI 操作，命令带 `--repo runningwaterpro/milkup`。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+五个角色标签，名字与角色同名：needs-triage、needs-info、ready-for-agent、ready-for-human、wontfix。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文：仓库根 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
