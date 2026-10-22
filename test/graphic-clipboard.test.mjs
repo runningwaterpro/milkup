@@ -193,8 +193,35 @@ test("createGraphicCopyButton copies the graphic when clicked", async () => {
   assert.equal(button.classList.contains("failed"), false);
 });
 
-test("createGraphicCopyButton shows the failure state when the copy fails", async () => {
+test("createGraphicCopyButton shows the pending state while the copy is running", async () => {
   installClipboardBridge();
+  const root = makeRoot('<div class="milkup-mermaid-preview"></div>');
+  let finish;
+  const button = createGraphicCopyButton(root, {
+    produce: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  root.appendChild(button);
+
+  button.click();
+
+  assert.equal(button.classList.contains("pending"), true);
+  assert.equal(button.title, "复制中…");
+
+  // 复制进行中再点一次，不该再写一遍剪贴板
+  button.click();
+  assert.equal(button.classList.contains("pending"), true);
+
+  finish({ dataUrl: pngDataUrl() });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(button.classList.contains("pending"), false);
+  assert.equal(button.classList.contains("copied"), true);
+});
+
+test("createGraphicCopyButton shows the failure state when the copy fails", async () => {  installClipboardBridge();
   const root = makeRoot('<div class="milkup-mermaid-preview"></div>');
   let resolveResult;
   const resultPromise = new Promise((resolve) => {

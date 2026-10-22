@@ -666,6 +666,17 @@
   color: #dc3545;
 }
 
+/* 复制进行中：转圈，别让按钮看起来像没反应 */
+.milkup-graphic-copy-btn.pending svg {
+  animation: milkup-graphic-copy-spin 0.8s linear infinite;
+}
+
+@keyframes milkup-graphic-copy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .milkup-mermaid-preview svg {
   max-width: 100%;
   height: auto;

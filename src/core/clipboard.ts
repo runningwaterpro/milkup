@@ -1140,11 +1140,14 @@ function applyTableBorders(root: HTMLElement): void {
 const GRAPHIC_COPY_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>`;
 const GRAPHIC_COPIED_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
 const GRAPHIC_FAILED_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+const GRAPHIC_PENDING_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>`;
 
 /** 复制按钮的默认提示 */
 const GRAPHIC_COPY_TITLE = "复制图形";
 /** 复制成功后的提示 */
 const GRAPHIC_COPIED_TITLE = "已复制图形";
+/** 复制进行中的提示 */
+const GRAPHIC_PENDING_TITLE = "复制中…";
 
 export type GraphicCopyStatus = "copied" | "failed";
 
@@ -1453,8 +1456,18 @@ export function createGraphicCopyButton(
     event.preventDefault();
     event.stopPropagation();
 
+    // 复制进行中就不要再起一次，免得写两遍剪贴板。
+    if (button.classList.contains("pending")) return;
+
+    // 产出可能要一秒以上（mermaid 图要重渲染一份，见 ADR-0003）。
+    // 先给「复制中」的反馈，别让按钮看起来像没反应。
+    button.classList.add("pending");
+    button.innerHTML = GRAPHIC_PENDING_ICON;
+    setButtonState(button, GRAPHIC_PENDING_TITLE);
+
     void copyGraphicToClipboard(container, options.produce).then((result) => {
       const copied = result.status === "copied";
+      button.classList.remove("pending");
       button.classList.toggle("copied", copied);
       button.classList.toggle("failed", !copied);
       button.innerHTML = copied ? GRAPHIC_COPIED_ICON : GRAPHIC_FAILED_ICON;
