@@ -1439,7 +1439,7 @@ export async function produceImageGraphic(container: Element): Promise<GraphicPr
 }
 
 /**
- * 创建图形复制按钮。三类图形共用同一个实现：同一图标、同一位置、同一反馈。
+ * 创建图形复制按钮。各类图形共用同一个实现：同一图标、同一位置、同一反馈。
  */
 export function createGraphicCopyButton(
   container: Element,
@@ -1452,6 +1452,32 @@ export function createGraphicCopyButton(
   setButtonState(button, GRAPHIC_COPY_TITLE);
   button.innerHTML = GRAPHIC_COPY_ICON;
 
+  /** 复位定时器：复制完成后把按钮恢复原样 */
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleReset = (): void => {
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => {
+      button.classList.remove("copied", "failed");
+      button.innerHTML = GRAPHIC_COPY_ICON;
+      setButtonState(button, GRAPHIC_COPY_TITLE);
+      resetTimer = null;
+    }, 1500);
+  };
+
+  const showResult = (result: GraphicCopyResult): void => {
+    const copied = result.status === "copied";
+    button.classList.remove("pending");
+    button.classList.toggle("copied", copied);
+    button.classList.toggle("failed", !copied);
+    button.innerHTML = copied ? GRAPHIC_COPIED_ICON : GRAPHIC_FAILED_ICON;
+    setButtonState(
+      button,
+      copied ? GRAPHIC_COPIED_TITLE : `复制图形失败：${result.reason ?? "未知原因"}`
+    );
+    scheduleReset();
+  };
+
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1459,28 +1485,25 @@ export function createGraphicCopyButton(
     // 复制进行中就不要再起一次，免得写两遍剪贴板。
     if (button.classList.contains("pending")) return;
 
+    // 上一次的复位定时器不能把这一次的「复制中」冲掉。
+    if (resetTimer) {
+      clearTimeout(resetTimer);
+      resetTimer = null;
+    }
+
     // 产出可能要一秒以上（mermaid 图要重渲染一份，见 ADR-0003）。
     // 先给「复制中」的反馈，别让按钮看起来像没反应。
     button.classList.add("pending");
     button.innerHTML = GRAPHIC_PENDING_ICON;
     setButtonState(button, GRAPHIC_PENDING_TITLE);
 
-    void copyGraphicToClipboard(container, options.produce).then((result) => {
-      const copied = result.status === "copied";
-      button.classList.remove("pending");
-      button.classList.toggle("copied", copied);
-      button.classList.toggle("failed", !copied);
-      button.innerHTML = copied ? GRAPHIC_COPIED_ICON : GRAPHIC_FAILED_ICON;
-      setButtonState(button, copied ? GRAPHIC_COPIED_TITLE : `复制图形失败：${result.reason ?? "未知原因"}`);
-
-      setTimeout(() => {
-        button.classList.remove("copied", "failed");
-        button.innerHTML = GRAPHIC_COPY_ICON;
-        setButtonState(button, GRAPHIC_COPY_TITLE);
-      }, 1500);
-
-      options.onResult?.(result);
-    });
+    void copyGraphicToClipboard(container, options.produce)
+      .then((result) => {
+        showResult(result);
+        options.onResult?.(result);
+      })
+      // 产出器抛异常时也要收敛到失败态，否则按钮会一直停在「复制中」。
+      .catch(() => showResult({ status: "failed", reason: "复制过程中出错" }));
   });
 
   return button;

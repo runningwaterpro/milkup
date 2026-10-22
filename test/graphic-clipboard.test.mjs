@@ -194,7 +194,7 @@ test("createGraphicCopyButton copies the graphic when clicked", async () => {
 });
 
 test("createGraphicCopyButton shows the pending state while the copy is running", async () => {
-  installClipboardBridge();
+  const calls = installClipboardBridge();
   const root = makeRoot('<div class="milkup-mermaid-preview"></div>');
   let finish;
   const button = createGraphicCopyButton(root, {
@@ -213,12 +213,57 @@ test("createGraphicCopyButton shows the pending state while the copy is running"
   // 复制进行中再点一次，不该再写一遍剪贴板
   button.click();
   assert.equal(button.classList.contains("pending"), true);
+  assert.equal(calls.length, 0);
 
   finish({ dataUrl: pngDataUrl() });
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   assert.equal(button.classList.contains("pending"), false);
   assert.equal(button.classList.contains("copied"), true);
+  assert.equal(calls.length, 1);
+});
+
+test("createGraphicCopyButton falls back to the failure state when the producer throws", async () => {
+  installClipboardBridge();
+  const root = makeRoot('<div class="milkup-mermaid-preview"></div>');
+  let finish;
+  const button = createGraphicCopyButton(root, {
+    produce: () =>
+      new Promise((_resolve, reject) => {
+        finish = reject;
+      }),
+  });
+  root.appendChild(button);
+
+  button.click();
+  assert.equal(button.classList.contains("pending"), true);
+
+  finish(new Error("boom"));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // 产出器抛异常时按钮不能一直停在「复制中」
+  assert.equal(button.classList.contains("pending"), false);
+  assert.equal(button.classList.contains("failed"), true);
+  assert.equal(button.title, "复制图形失败：复制过程中出错");
+});
+
+test("createGraphicCopyButton keeps the pending state when a new copy starts", async () => {
+  const calls = installClipboardBridge();
+  const root = makeRoot(`<div class="milkup-mermaid-preview" data-graphic-image="${pngDataUrl()}"></div>`);
+  const button = createGraphicCopyButton(root);
+  root.appendChild(button);
+
+  button.click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(button.classList.contains("copied"), true);
+
+  // 第二次复制开始后，上一次的复位定时器不能把「复制中」冲掉
+  button.click();
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+
+  assert.equal(button.classList.contains("pending"), false);
+  assert.equal(button.classList.contains("copied"), true);
+  assert.equal(calls.length, 2);
 });
 
 test("createGraphicCopyButton shows the failure state when the copy fails", async () => {  installClipboardBridge();

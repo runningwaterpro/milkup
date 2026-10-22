@@ -624,7 +624,7 @@
   background: var(--background-color-1, #fff);
 }
 
-/* 图形复制按钮（三类图形共用） */
+/* 图形复制按钮（各类图形共用） */
 .milkup-graphic-copy-btn {
   position: absolute;
   top: 6px;
