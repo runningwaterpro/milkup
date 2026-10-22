@@ -13,8 +13,12 @@ import {
   registerIpcOnHandlers,
 } from "./ipcBridge";
 import createMenu from "./menu";
+import { installOutputStreamGuards } from "./outputStreams";
 import { setupUpdateHandlers } from "./update";
 import { getAdaptiveEditorWindowOptions, trackWindow } from "./windowManager";
+
+// 启动器可能是管道，管道一关，日志写不出去会让主进程带着 EPIPE 崩掉。
+installOutputStreamGuards();
 
 let win: BrowserWindow | null = null;
 let themeEditorWindow: BrowserWindow | null = null;
