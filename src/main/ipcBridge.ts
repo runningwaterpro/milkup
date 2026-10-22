@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import chokidar from "chokidar";
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from "electron";
 import { getFonts } from "font-list";
 import {
   cleanupProtocolUrls,
@@ -98,6 +98,18 @@ interface ImagePreviewPayload {
   alt?: string;
   items?: ImagePreviewItem[];
   index?: number;
+}
+
+/**
+ * 把渲染进程传来的二进制数据转成 Buffer。
+ */
+function toImageBuffer(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  return null;
 }
 
 function isAbsoluteImageDirectory(inputPath: string): boolean {
@@ -1250,6 +1262,22 @@ export function registerGlobalIpcHandlers() {
       return false;
     }
   });
+  ipcMain.handle(
+    "clipboard:writeImage",
+    async (_event, bytes: unknown): Promise<boolean> => {
+      try {
+        const buffer = toImageBuffer(bytes);
+        if (!buffer || buffer.length === 0) return false;
+        const image = nativeImage.createFromBuffer(buffer);
+        if (image.isEmpty()) return false;
+        clipboard.writeImage(image);
+        return true;
+      } catch (error) {
+        console.error("写入图片到剪贴板失败", error);
+        return false;
+      }
+    }
+  );
   ipcMain.handle(
     "image:openPreview",
     async (event, payload: ImagePreviewPayload): Promise<void> => {

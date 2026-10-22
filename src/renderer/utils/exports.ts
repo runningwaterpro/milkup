@@ -1,4 +1,7 @@
 import type { Block, ExportPDFOptions } from "@/main/types";
+// 用相对路径而不是 "@/core/..."：这个模块被 node 的测试直接 import，
+// node 不认 vite 的 "@" 别名。
+import { stripGraphicCacheAttributes } from "../../core/utils/graphic-cache.ts";
 
 const ACTIVE_EDITOR_SELECTOR = '.milkup-editor-instance[data-active="true"] .milkup-container';
 
@@ -86,6 +89,8 @@ function cloneWithInlineStyles(element: HTMLElement): HTMLElement {
   // 必须在内联样式之后剔除：样式内联按索引配对源与克隆的子节点，
   // 提前删除会让后续节点全部错位
   stripEditorChrome(clone);
+  // 图形缓存里存着整张图的 base64，带进导出文件会让文件白白变大
+  stripGraphicCacheAttributes(clone);
   return clone;
 }
 
@@ -224,6 +229,8 @@ const EXPORT_EDITOR_CHROME_CLASSES: ReadonlySet<string> = new Set([
   "milkup-code-block-lang-select",
   "milkup-code-block-mode-select",
   "milkup-custom-select",
+  // 图形复制按钮
+  "milkup-graphic-copy-btn",
   // 浮层
   "milkup-context-menu",
   "milkup-context-menu-submenu",

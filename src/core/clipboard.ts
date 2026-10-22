@@ -5,10 +5,29 @@ import type { Fragment } from "prosemirror-model";
 import type { EditorView as ProseMirrorView } from "prosemirror-view";
 import { decodeHtmlEntity, HTML_ENTITY_SYNTAX_TYPE } from "./utils/html-entities.ts";
 import { resolveImageSrc } from "./utils/image-path.ts";
+import {
+  bytesToDataUrl,
+  isSvgImageSource,
+  readImageSourceBytes,
+  readSvgIntrinsicSize,
+  withExplicitSvgSize,
+} from "./utils/image-source.ts";
+import {
+  findGraphicCache,
+  GRAPHIC_CACHE_ATTRIBUTE,
+  stripGraphicCacheAttributes,
+} from "./utils/graphic-cache.ts";
 import type { ImagePasteMethod } from "./plugins/paste";
 
 const CELL_BORDER = "1px solid #cccccc";
 const CLIPBOARD_TREEWALKER_SHOW_TEXT = typeof NodeFilter === "undefined" ? 4 : NodeFilter.SHOW_TEXT;
+
+/** 图形复制按钮的 class */
+const GRAPHIC_COPY_BUTTON_CLASS = "milkup-graphic-copy-btn";
+/** 图形复制的像素密度倍数 */
+const GRAPHIC_SCALE = 2;
+/** 图形复制的最长边上限（像素） */
+const GRAPHIC_MAX_SIDE = 4096;
 
 export const RENDERED_CLIPBOARD_NODE_TYPES = new Set([
   "table",
@@ -422,6 +441,7 @@ function cleanRenderedClipboardDom(root: HTMLElement): void {
   const controls = [
     ".milkup-code-block-header",
     ".milkup-code-block-copy-btn",
+    ".milkup-copy-image-btn",
     ".milkup-html-block-header",
     ".milkup-list-marker",
     ".cm-gutters",
@@ -445,6 +465,7 @@ function cleanRenderedClipboardDom(root: HTMLElement): void {
     }
     element.removeAttribute("contenteditable");
     element.removeAttribute("data-clipboard-pending");
+    element.removeAttribute(GRAPHIC_CACHE_ATTRIBUTE);
   }
 
   for (const checkbox of Array.from(root.querySelectorAll<HTMLElement>(".milkup-task-checkbox"))) {
@@ -551,6 +572,7 @@ export function semanticizeClipboardDom(
   }
 
   sanitizeClipboardFlowDom(root);
+  removeGraphicCopyButtons(root);
   return root;
 }
 
@@ -623,6 +645,7 @@ export function writeClipboardEvent(
 type ElectronClipboardApi = {
   writeToClipboard?: (payload: { text: string; html: string }) => Promise<boolean>;
   writeTextToClipboard?: (text: string) => Promise<boolean>;
+  writeImageToClipboard?: (bytes: Uint8Array<ArrayBuffer>) => Promise<boolean>;
 };
 
 function getBrowserClipboard(): Clipboard | null {
@@ -871,22 +894,8 @@ export async function cacheClipboardImage(image: HTMLImageElement): Promise<stri
 
 async function fetchImageAsDataUrl(src: string): Promise<string | null> {
   if (!src || src.startsWith("data:")) return null;
-  try {
-    const response = await fetch(src);
-    if (!response.ok && response.status !== 0) return null;
-    return await blobToDataUrl(await response.blob());
-  } catch {
-    return null;
-  }
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => resolve("");
-    reader.readAsDataURL(blob);
-  });
+  const source = await readImageSourceBytes(src);
+  return source ? bytesToDataUrl(source.bytes, source.mimeType) : null;
 }
 
 export async function cacheClipboardPng(element: Element): Promise<string | null> {
@@ -1001,6 +1010,7 @@ export function buildSelfContainedMarkup(element: Element): { markup: string; is
   const clone = element.cloneNode(true) as Element;
   inlineRuntimeStylesForRaster(element, clone);
   removeClipboardPngAttributes(clone);
+  removeGraphicCopyButtons(clone);
 
   const fontFaceCss = getRuntimeFontFaceCss(element.ownerDocument);
   if (fontFaceCss) {
@@ -1030,14 +1040,7 @@ async function rasterizeElement(element: Element): Promise<string | null> {
     if (width <= 0 || height <= 0) return null;
 
     const originalMarkup = element.outerHTML;
-    const { markup, isSvg } = buildSelfContainedMarkup(element);
-    const svgMarkup =
-      isSvg && !/\sxmlns=/.test(markup)
-        ? markup.replace(/^<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"')
-        : markup;
-    const source = isSvg
-      ? svgMarkup
-      : `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml">${markup}</div></foreignObject></svg>`;
+    const source = buildRasterSvgSource(element, width, height);
     const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
     const objectUrl = URL.createObjectURL(blob);
     url = objectUrl;
@@ -1067,6 +1070,13 @@ async function rasterizeElement(element: Element): Promise<string | null> {
 function removeClipboardPngAttributes(element: Element): void {
   for (const node of [element, ...Array.from(element.querySelectorAll("*"))]) {
     node.removeAttribute("data-clipboard-png");
+    node.removeAttribute(GRAPHIC_CACHE_ATTRIBUTE);
+  }
+}
+
+function removeGraphicCopyButtons(element: Element): void {
+  for (const node of Array.from(element.querySelectorAll(`.${GRAPHIC_COPY_BUTTON_CLASS}`))) {
+    node.remove();
   }
 }
 
@@ -1121,4 +1131,363 @@ function applyTableBorders(root: HTMLElement): void {
   for (const cell of root.querySelectorAll<HTMLElement>("th,td")) {
     if (!cell.style.border) cell.style.border = CELL_BORDER;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 图形复制：把渲染好的图形以 PNG 位图写进剪贴板                              */
+/* -------------------------------------------------------------------------- */
+
+const GRAPHIC_COPY_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>`;
+const GRAPHIC_COPIED_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+const GRAPHIC_FAILED_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+const GRAPHIC_PENDING_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>`;
+
+/** 复制按钮的默认提示 */
+const GRAPHIC_COPY_TITLE = "复制图形";
+/** 复制成功后的提示 */
+const GRAPHIC_COPIED_TITLE = "已复制图形";
+/** 复制进行中的提示 */
+const GRAPHIC_PENDING_TITLE = "复制中…";
+
+export type GraphicCopyStatus = "copied" | "failed";
+
+export interface GraphicCopyResult {
+  status: GraphicCopyStatus;
+  /** 失败原因，给用户看的 */
+  reason?: string;
+}
+
+/**
+ * 图形产出结果。dataUrl 为 null 表示产出失败，reason 说明失败原因。
+ */
+export interface GraphicProduction {
+  dataUrl: string | null;
+  reason?: string;
+}
+
+/** 图形产出器：返回图形 data URL，失败时给出原因 */
+export type GraphicProducer = (container: Element) => Promise<GraphicProduction>;
+
+export interface GraphicCopyButtonOptions {
+  /** 图形产出器，缺省用容器里的矢量图 */
+  produce?: GraphicProducer;
+  /** 复制结束后的回调 */
+  onResult?: (result: GraphicCopyResult) => void;
+}
+
+/**
+ * 把 data URL 解成字节。
+ */
+export function dataUrlToBytes(dataUrl: string): Uint8Array<ArrayBuffer> | null {
+  const match = /^data:([^;,]*)((?:;[^;,]*)*),(.*)$/s.exec(dataUrl);
+  if (!match) return null;
+
+  const payload = match[3] ?? "";
+  const isBase64 = /;base64/i.test(match[2] ?? "");
+
+  try {
+    if (isBase64) {
+      if (typeof atob !== "function") return null;
+      const binary = atob(payload);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    }
+
+    const decoded = decodeURIComponent(payload);
+    const bytes = new Uint8Array(decoded.length);
+    for (let index = 0; index < decoded.length; index += 1) {
+      bytes[index] = decoded.charCodeAt(index) & 0xff;
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 取图形容器的实际背景色，取不到时用白色。
+ */
+export function getGraphicBackgroundColor(element: Element): string {
+  if (typeof getComputedStyle !== "function") return "#ffffff";
+
+  let node: Element | null = element;
+  while (node) {
+    try {
+      const color = getComputedStyle(node).backgroundColor;
+      if (color && color !== "transparent" && !isFullyTransparent(color)) return color;
+    } catch {
+      // 计算样式不可用时继续向上找。
+    }
+    node = node.parentElement;
+  }
+
+  return "#ffffff";
+}
+
+function isFullyTransparent(color: string): boolean {
+  const match = /rgba?\(([^)]+)\)/.exec(color);
+  if (!match) return false;
+  const parts = (match[1] ?? "").split(",").map((part) => part.trim());
+  if (parts.length < 4) return false;
+  return Number(parts[3]) === 0;
+}
+
+/**
+ * 取图形的像素尺寸：优先用布局尺寸，其次用固有尺寸。
+ */
+function getGraphicSize(element: Element): { width: number; height: number } {
+  const rect = element.getBoundingClientRect?.();
+  if (rect && rect.width > 0 && rect.height > 0) {
+    return { width: Math.ceil(rect.width), height: Math.ceil(rect.height) };
+  }
+
+  if (element.tagName.toLowerCase() === "img") {
+    const image = element as HTMLImageElement;
+    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+      return { width: image.naturalWidth, height: image.naturalHeight };
+    }
+  }
+
+  const viewBox = element
+    .getAttribute("viewBox")
+    ?.trim()
+    .split(/[\s,]+/)
+    .map((value) => Number(value));
+  if (viewBox && viewBox.length === 4 && viewBox.every((value) => Number.isFinite(value))) {
+    return { width: Math.ceil(viewBox[2]), height: Math.ceil(viewBox[3]) };
+  }
+
+  const width = Number.parseFloat(element.getAttribute("width") ?? "");
+  const height = Number.parseFloat(element.getAttribute("height") ?? "");
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    return { width: Math.ceil(width), height: Math.ceil(height) };
+  }
+
+  return { width: 0, height: 0 };
+}
+
+/**
+ * 把图形元素画成 SVG 源码。
+ * 注意：Chromium 会把含 foreignObject 的 SVG 判为污染画布，含 foreignObject 的图形导不出位图。
+ */
+function buildRasterSvgSource(element: Element, width: number, height: number): string {
+  const { markup, isSvg } = buildSelfContainedMarkup(element);
+  if (isSvg) {
+    return /\sxmlns=/.test(markup)
+      ? markup
+      : markup.replace(/^<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml">${markup}</div></foreignObject></svg>`;
+}
+
+/**
+ * 把 SVG 源码栅格化成 PNG：按给定底色铺底，2 倍像素密度，最长边 4096 截断。
+ */
+export async function rasterizeSvgSource(
+  ownerDocument: Document,
+  source: string,
+  width: number,
+  height: number,
+  background: string
+): Promise<string | null> {
+  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
+  if (width <= 0 || height <= 0) return null;
+
+  const scale = Math.min(GRAPHIC_SCALE, GRAPHIC_MAX_SIDE / Math.max(width, height));
+  const canvas = ownerDocument.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+
+  context.fillStyle = background;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  try {
+    const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    try {
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("graphic rasterization failed"));
+        image.src = url;
+      });
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把图形元素栅格化成 PNG：按给定底色铺底，2 倍像素密度，最长边 4096 截断。
+ */
+export async function rasterizeGraphic(
+  element: Element,
+  background?: string
+): Promise<string | null> {
+  const { width, height } = getGraphicSize(element);
+  if (width <= 0 || height <= 0) return null;
+
+  const source = buildRasterSvgSource(element, width, height);
+  return rasterizeSvgSource(
+    element.ownerDocument,
+    source,
+    width,
+    height,
+    background ?? getGraphicBackgroundColor(element)
+  );
+}
+/**
+ * 默认产出器：栅格化容器里的矢量图。
+ */
+async function defaultGraphicProducer(container: Element): Promise<GraphicProduction> {
+  const target = container.querySelector("svg") ?? container;
+  const dataUrl = await rasterizeGraphic(target, getGraphicBackgroundColor(container));
+  return dataUrl ? { dataUrl } : { dataUrl: null, reason: "图形栅格化失败" };
+}
+
+/**
+ * 解析图形容器的图形：优先用图形缓存，缓存缺失时当场产出。
+ */
+export async function resolveGraphicProduction(
+  container: Element,
+  produce: GraphicProducer = defaultGraphicProducer
+): Promise<GraphicProduction> {
+  const cached = findGraphicCache(container);
+  if (cached) return { dataUrl: cached };
+
+  const production = await produce(container);
+  if (!production.dataUrl) return production;
+  if (container.isConnected) container.setAttribute(GRAPHIC_CACHE_ATTRIBUTE, production.dataUrl);
+  return production;
+}
+
+/**
+ * 把图形复制到剪贴板。只写图形载荷，不写纯文本载荷与渲染载荷。
+ */
+export async function copyGraphicToClipboard(
+  container: Element,
+  produce?: GraphicProducer
+): Promise<GraphicCopyResult> {
+  const production = await resolveGraphicProduction(container, produce);
+  if (!production.dataUrl) return { status: "failed", reason: production.reason };
+
+  const bytes = dataUrlToBytes(production.dataUrl);
+  if (!bytes || bytes.length === 0) return { status: "failed", reason: "图形数据为空" };
+
+  const api = getElectronClipboardApi();
+  if (!api?.writeImageToClipboard) return { status: "failed", reason: "剪贴板不可用" };
+
+  try {
+    const written = await api.writeImageToClipboard(bytes);
+    return written === true
+      ? { status: "copied" }
+      : { status: "failed", reason: "剪贴板写入失败" };
+  } catch {
+    return { status: "failed", reason: "剪贴板写入失败" };
+  }
+}
+
+/**
+ * 产出插入图片的可复制图形：位图直传原图字节，SVG 原图栅格化成 PNG。
+ */
+export async function produceImageGraphic(container: Element): Promise<GraphicProduction> {
+  const image = container.querySelector("img");
+  if (!image) return { dataUrl: null, reason: "没有可复制的图片" };
+
+  if (!image.complete || !image.naturalWidth || !image.naturalHeight) {
+    return { dataUrl: null, reason: "图片尚未加载完成" };
+  }
+
+  const source = await readImageSourceBytes(image.currentSrc || image.src || "");
+  if (!source) return { dataUrl: null, reason: "读取图片失败" };
+
+  if (!isSvgImageSource(source)) {
+    return { dataUrl: bytesToDataUrl(source.bytes, source.mimeType) };
+  }
+
+  const svgText = new TextDecoder().decode(source.bytes);
+  // 含 foreignObject 的 SVG 会被 Chromium 判为污染画布，导不出位图（见 ADR-0003）。
+  if (/<foreignObject\b/i.test(svgText)) {
+    return { dataUrl: null, reason: "SVG 含 foreignObject，无法转成 PNG" };
+  }
+
+  const size = readSvgIntrinsicSize(svgText) ?? {
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+  };
+  const dataUrl = await rasterizeSvgSource(
+    container.ownerDocument,
+    withExplicitSvgSize(svgText, size.width, size.height),
+    size.width,
+    size.height,
+    getGraphicBackgroundColor(container)
+  );
+
+  return dataUrl ? { dataUrl } : { dataUrl: null, reason: "SVG 图片转 PNG 失败" };
+}
+
+/**
+ * 创建图形复制按钮。三类图形共用同一个实现：同一图标、同一位置、同一反馈。
+ */
+export function createGraphicCopyButton(
+  container: Element,
+  options: GraphicCopyButtonOptions = {}
+): HTMLButtonElement {
+  const document = container.ownerDocument;
+  const button = document.createElement("button");
+  button.className = GRAPHIC_COPY_BUTTON_CLASS;
+  button.type = "button";
+  setButtonState(button, GRAPHIC_COPY_TITLE);
+  button.innerHTML = GRAPHIC_COPY_ICON;
+
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    // 复制进行中就不要再起一次，免得写两遍剪贴板。
+    if (button.classList.contains("pending")) return;
+
+    // 产出可能要一秒以上（mermaid 图要重渲染一份，见 ADR-0003）。
+    // 先给「复制中」的反馈，别让按钮看起来像没反应。
+    button.classList.add("pending");
+    button.innerHTML = GRAPHIC_PENDING_ICON;
+    setButtonState(button, GRAPHIC_PENDING_TITLE);
+
+    void copyGraphicToClipboard(container, options.produce).then((result) => {
+      const copied = result.status === "copied";
+      button.classList.remove("pending");
+      button.classList.toggle("copied", copied);
+      button.classList.toggle("failed", !copied);
+      button.innerHTML = copied ? GRAPHIC_COPIED_ICON : GRAPHIC_FAILED_ICON;
+      setButtonState(button, copied ? GRAPHIC_COPIED_TITLE : `复制图形失败：${result.reason ?? "未知原因"}`);
+
+      setTimeout(() => {
+        button.classList.remove("copied", "failed");
+        button.innerHTML = GRAPHIC_COPY_ICON;
+        setButtonState(button, GRAPHIC_COPY_TITLE);
+      }, 1500);
+
+      options.onResult?.(result);
+    });
+  });
+
+  return button;
+}
+
+/** 同步按钮的提示与无障碍标签 */
+function setButtonState(button: HTMLButtonElement, title: string): void {
+  button.title = title;
+  button.setAttribute("aria-label", title);
 }

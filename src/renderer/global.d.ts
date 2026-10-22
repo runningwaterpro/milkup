@@ -47,6 +47,7 @@ interface Window {
     getFilePathInClipboard: () => Promise<string | null>;
     writeTextToClipboard: (text: string) => Promise<boolean>;
     writeToClipboard: (payload: { text: string; html: string }) => Promise<boolean>;
+    writeImageToClipboard: (bytes: Uint8Array<ArrayBuffer>) => Promise<boolean>;
     writeTempImage: (
       file: Uint8Array<ArrayBuffer>,
       targetPath: string,

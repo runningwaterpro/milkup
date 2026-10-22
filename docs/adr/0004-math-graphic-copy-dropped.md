@@ -1,0 +1,16 @@
+# 数学公式不做图形复制
+
+KaTeX 只输出 HTML 渲染结果，没有矢量源。要把公式变成位图，只能把 HTML 塞进 SVG 的 `foreignObject` 再栅格化，而含 `foreignObject` 的 SVG 会被 Chromium 判为污染画布，`canvas.toDataURL()` 直接抛 SecurityError（见 ADR-0003）。仓库里原有的 PNG 兜底 `rasterizeElement` 对数学块同样导不出，它只对纯 SVG 生效。剩下的路只有主进程按元素矩形截图（`webContents.capturePage`），要新增一条 IPC，还要处理窗口遮挡、编辑区缩放与 DPI 缩放。代价大于收益：mermaid 图与插入的图片已经覆盖「把渲染好的图整块放进 Word、钉钉」的主要场景，公式要整块搬走可以截图或复制源码。决定：数学公式不接入图形复制。
+
+## Considered Options
+
+- **把 KaTeX 的 HTML 塞进 SVG 再栅格化**：和 ADR-0003 撞同一个坑，导不出位图。除非另找一套不依赖 foreignObject 的 HTML 栅格化方案（引入 html2canvas 之类的依赖），否则这条路是死的。
+- **主进程按元素矩形截图**：能出图，绕开 foreignObject。代价是新增一条 IPC，截图要处理窗口被遮挡、编辑区缩放、DPI 缩放；截图期间窗口状态也可能影响结果。为一类图形引入一套新的产出通道，不值。
+- **换渲染库，让公式输出 SVG**：改动公式渲染本身，超出这个功能的范围，且会牵动公式的排版与性能。
+
+## Consequences
+
+- 可复制图形只有两类：mermaid 图、插入的图片。`CONTEXT.md` 的「可复制图形」已同步改写。
+- 数学块上不挂「复制图形」按钮，也不加右键菜单项。
+- 公式要整块搬走，仍然只能截图或复制源码。
+- 将来要重新考虑这个决定，需要满足下面任一条：KaTeX 能输出矢量源；主进程已经有稳定的按区域截图通道；仓库愿意为 HTML 栅格化引入依赖。

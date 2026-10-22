@@ -78,6 +78,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   writeTextToClipboard: (text: string) => ipcRenderer.invoke("clipboard:writeText", text),
   writeToClipboard: (payload: { text: string; html: string }) =>
     ipcRenderer.invoke("clipboard:write", payload),
+  writeImageToClipboard: (bytes: Uint8Array) =>
+    ipcRenderer.invoke("clipboard:writeImage", bytes),
   writeTempImage: (
     file: Uint8Array,
     targetPath: string,

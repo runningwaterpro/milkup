@@ -617,10 +617,64 @@
 
 /* Mermaid 预览 */
 .milkup-mermaid-preview {
+  position: relative;
   padding: 16px;
   text-align: center;
   border-top: 1px solid var(--border-color, #e1e4e8);
   background: var(--background-color-1, #fff);
+}
+
+/* 图形复制按钮（三类图形共用） */
+.milkup-graphic-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-color-3, #999);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.2s,
+    background 0.2s,
+    color 0.2s;
+}
+
+.milkup-mermaid-preview:hover .milkup-graphic-copy-btn,
+.milkup-image-preview:hover .milkup-graphic-copy-btn {
+  opacity: 1;
+}
+
+.milkup-graphic-copy-btn:hover {
+  background: var(--hover-color, rgba(0, 0, 0, 0.06));
+  color: var(--text-color-1, #333);
+}
+
+.milkup-graphic-copy-btn.copied {
+  color: var(--secondary-color, #28a745);
+}
+
+.milkup-graphic-copy-btn.failed {
+  color: #dc3545;
+}
+
+/* 复制进行中：转圈，别让按钮看起来像没反应 */
+.milkup-graphic-copy-btn.pending svg {
+  animation: milkup-graphic-copy-spin 0.8s linear infinite;
+}
+
+@keyframes milkup-graphic-copy-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .milkup-mermaid-preview svg {
@@ -740,8 +794,9 @@
   text-align: center;
 }
 
-/* 图片预览区域 */
+/* 图片预览区域。图片块同时是图形容器，复制按钮挂在它的右上角 */
 .milkup-editor .milkup-image-block .milkup-image-preview {
+  position: relative;
   cursor: pointer;
 }
 

@@ -51,11 +51,17 @@ import { searchPluginKey } from "../plugins/search";
 import {
   buildCodeClipboardPayload,
   canDeleteAfterClipboardWrite,
+  copyGraphicToClipboard,
   createCodeClipboardExtension,
+  createGraphicCopyButton,
   getCodeClipboardOptions,
+  getGraphicBackgroundColor,
+  rasterizeGraphic,
   requestClipboardPngFallback,
   writeClipboardPayload,
 } from "../clipboard";
+import { clearGraphicCache } from "../utils/graphic-cache";
+import type { GraphicProduction } from "../clipboard";
 
 /** Mermaid 显示模式 */
 type MermaidDisplayMode = "code" | "mixed" | "diagram";
@@ -226,6 +232,24 @@ function padMermaidSvgBounds(container: HTMLElement): void {
 
   container.querySelectorAll(".nodeLabel, .edgeLabel, .label").forEach((label) => {
     (label as HTMLElement).style.overflow = "visible";
+  });
+}
+
+/**
+ * 初始化 mermaid。htmlLabels 决定标签是 HTML 还是 SVG 文本：
+ * 含 foreignObject 的 SVG 在 Chromium 里会被判为污染画布，导不出位图。
+ */
+function initializeMermaid(
+  mermaid: typeof import("mermaid").default,
+  htmlLabels: boolean
+): void {
+  mermaid.initialize({
+    startOnLoad: false,
+    darkMode: detectDarkTheme(),
+    theme: "base",
+    themeVariables: getMermaidThemeVariables(),
+    htmlLabels,
+    flowchart: { htmlLabels },
   });
 }
 
@@ -539,6 +563,7 @@ export class CodeBlockView implements NodeView {
   lineNumbersCompartment: Compartment;
   searchHighlightCompartment: Compartment;
   mermaidPreview: HTMLElement | null = null;
+  mermaidGraphicArea: HTMLElement | null = null;
   mermaidDisplayMode: MermaidDisplayMode = globalMermaidDefaultMode;
   themeObserver: MutationObserver | null = null;
   headerElement: HTMLElement | null = null;
@@ -1317,6 +1342,15 @@ export class CodeBlockView implements NodeView {
     });
     menu.appendChild(copyBlockItem);
 
+    // 复制图形（仅 mermaid 块有图形）
+    if (this.node.attrs.language === "mermaid") {
+      const copyGraphicItem = this.createContextMenuItem("复制图形", false, () => {
+        void this.copyMermaidGraphic();
+        this.hideContextMenu();
+      });
+      menu.appendChild(copyGraphicItem);
+    }
+
     if (isHeaderContextMenu) {
       const separator = document.createElement("div");
       separator.className = "milkup-context-menu-separator";
@@ -1561,10 +1595,20 @@ export class CodeBlockView implements NodeView {
     if (!this.mermaidPreview) {
       this.mermaidPreview = document.createElement("div");
       this.mermaidPreview.className = "milkup-mermaid-preview";
+      // 图形与复制按钮分开存放，重新渲染图形时不会把按钮冲掉。
+      this.mermaidGraphicArea = document.createElement("div");
+      this.mermaidGraphicArea.className = "milkup-mermaid-graphic";
+      this.mermaidPreview.appendChild(this.mermaidGraphicArea);
+      this.mermaidPreview.appendChild(
+        createGraphicCopyButton(this.mermaidPreview, {
+          produce: (container: Element) => this.produceMermaidGraphic(container),
+        })
+      );
       this.dom.appendChild(this.mermaidPreview);
     }
 
     const preview = this.mermaidPreview;
+    const area = this.mermaidGraphicArea as HTMLElement;
 
     // 排队执行，避免多个 mermaid 块同时 render 互相干扰
     mermaidRenderQueue = mermaidRenderQueue.then(async () => {
@@ -1574,15 +1618,11 @@ export class CodeBlockView implements NodeView {
         const mermaid = await import("mermaid");
         const isDark = detectDarkTheme();
 
-        mermaid.default.initialize({
-          startOnLoad: false,
-          darkMode: isDark,
-          theme: "base",
-          themeVariables: getMermaidThemeVariables(),
-        });
+        initializeMermaid(mermaid.default, true);
 
         const { svg } = await mermaid.default.render(renderId, content);
-        preview.innerHTML = svg;
+        area.innerHTML = svg;
+        clearGraphicCache(preview);
         padMermaidSvgBounds(preview);
         // 根据实际背景色修正文本颜色
         fixMermaidTextContrast(preview);
@@ -1595,12 +1635,69 @@ export class CodeBlockView implements NodeView {
         document.getElementById(`d${renderId}`)?.remove();
         document.getElementById(renderId)?.remove();
         document.getElementById(`i${renderId}`)?.remove();
-        preview.innerHTML = `<div class="milkup-mermaid-error">Mermaid 渲染错误</div>`;
+        area.innerHTML = `<div class="milkup-mermaid-error">Mermaid 渲染错误</div>`;
       }
     });
 
     await mermaidRenderQueue;
     this.updateMermaidDisplay();
+  }
+
+  /**
+   * 产出可复制的 Mermaid 图形。
+   * 复制用的图要重新渲染一遍，且关掉 HTML 标签：Chromium 会把含 foreignObject 的 SVG
+   * 判为污染画布，含 foreignObject 的 SVG 导不出位图。
+   */
+  private async produceMermaidGraphic(container: Element): Promise<GraphicProduction> {
+    const source = this.cm.state.doc.toString();
+    if (!source.trim()) return { dataUrl: null, reason: "Mermaid 代码为空" };
+
+    const renderId = `mermaid-copy-${++mermaidIdCounter}`;
+    let dataUrl: string | null = null;
+
+    // 与常规渲染共用同一条队列，避免两次渲染交叉改写 mermaid 的全局配置。
+    mermaidRenderQueue = mermaidRenderQueue.then(async () => {
+      let mermaidModule: typeof import("mermaid").default | null = null;
+      try {
+        mermaidModule = (await import("mermaid")).default;
+        initializeMermaid(mermaidModule, false);
+
+        const { svg } = await mermaidModule.render(renderId, source);
+        const holder = document.createElement("div");
+        holder.innerHTML = svg;
+        const graphic = holder.querySelector("svg");
+        if (!graphic) {
+          dataUrl = null;
+        } else {
+          // 与屏幕上的渲染保持一致：同样的留白与文字对比度修正。
+          padMermaidSvgBounds(holder);
+          fixMermaidTextContrast(holder);
+          dataUrl = await rasterizeGraphic(graphic, getGraphicBackgroundColor(container));
+        }
+      } catch {
+        dataUrl = null;
+      } finally {
+        document.getElementById(`d${renderId}`)?.remove();
+        document.getElementById(renderId)?.remove();
+        document.getElementById(`i${renderId}`)?.remove();
+        // 还原成屏幕上的渲染配置，别让复制用的配置影响后续渲染。
+        if (mermaidModule) initializeMermaid(mermaidModule, true);
+      }
+    });
+
+    await mermaidRenderQueue;
+    return dataUrl ? { dataUrl } : { dataUrl: null, reason: "Mermaid 渲染失败" };
+  }
+
+  /**
+   * 把 mermaid 图形复制到剪贴板。
+   */
+  private async copyMermaidGraphic(): Promise<boolean> {
+    if (!this.mermaidPreview) return false;
+    const result = await copyGraphicToClipboard(this.mermaidPreview, (container) =>
+      this.produceMermaidGraphic(container)
+    );
+    return result.status === "copied";
   }
 
   /**
